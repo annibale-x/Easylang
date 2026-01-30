@@ -1,8 +1,55 @@
 """
-Title: EasyLang - Global Translation Assistant
-Version: 0.7.19
+Title: 🚀 EasyLang: Open WebUI Translation Assistant 
+Version: 0.8.1
+https://github.com/annibale-x/Easylang
 Author: Hannibal
-Description: Surgical fix for TL auto-update on direct 'tr <text>' commands.
+Author_url: https://openwebui.com/u/h4nn1b4l
+Author_email: annibale.x@gmail.com
+Core Purpose:
+EasyLang is a high-performance translation middleware designed for Open WebUI. 
+It acts as an intelligent interceptor that manages multi-language workflows 
+between the User and the LLM, enabling seamless translation, context-aware 
+anchoring, and real-time performance telemetry.
+
+================================================================================
+
+[ MAIN FEATURES ]
+
+* Surgical Translation (tr/trc): Direct translation or interactive chat 
+    continuation with automatic context recovery.
+* Smart Language Anchoring: Dynamically detects and sets Base (BL) and 
+    Target (TL) languages based on user input patterns.
+* Cross-Session Persistence: Tracks user preferences (BL/TL) and chat 
+    history metadata using a lightweight in-memory state engine.
+* Performance Telemetry: Precise calculation of latency (seconds), 
+    token consumption, and processing speed (Tk/s).
+* Gemma/Mistral Optimized: Uses strict system-level instructions for 
+    intermediate LLM calls to prevent verbosity and ensure deterministic results.
+* Back-Translation Support: Optional verification loop to translate LLM 
+    responses back to the user's native tongue.
+
+[ LOGICAL WORKFLOW (FULL CYCLE) ]
+
+1.  INLET STAGE (User Request Interception):
+    a. IDENTIFICATION: Extract User ID, Chat ID, and Model context.
+    b. COMMAND PARSING: Regex-based routing for 'tr', 'trc', 'TL/BL' or help 't?'.
+    c. CONTEXT RECOVERY: If 'tr' is empty, scrape the last assistant message.
+    d. DETECTION CALL: Zero-temperature LLM execution to identify source language.
+    e. STATE SYNC: Auto-update TL if a new language is detected (Surgical Fix 0.7.19).
+    f. TRANSLATION CALL: Map source text to target language via isolated LLM call.
+    g. INJECTION: Replace user input with a technical prompt or service message.
+
+2.  LLM EXECUTION:
+    - The main model processes the modified prompt (e.g., "ACT AS TECHNICAL ASSISTANT IN FRENCH...").
+
+3.  OUTLET STAGE (Response Refinement):
+    a. METRICS AGGREGATION: Collect token usage from the main model response.
+    b. UI POLISHING: Restore original user text in history for 'trc' mode.
+    c. BACK-TRANSLATION (Optional): Re-translate the output to the Base Language.
+    d. TELEMETRY OUTPUT: Emit a status event with final Time, Tokens, and Speed.
+    e. CLEANUP: Clear volatile memory and release the thread.
+
+================================================================================
 """
 
 import re
@@ -11,7 +58,6 @@ import time
 from typing import Optional
 from pydantic import BaseModel, Field
 from open_webui.main import generate_chat_completion
-
 
 class Filter:
     class Valves(BaseModel):
@@ -119,21 +165,22 @@ class Filter:
             }
 
         if content.lower() == "t?":
-            bl, tl = self._get_bl(user_id) or "Not anchored (Auto)", self._get_tl(
+            bl, tl = self._get_bl(user_id) or "Not yet defined (Auto)", self._get_tl(
                 user_id
             )
             help_msg = (
                 f"### 🌐 EasyLang Helper\n"
                 f"**Current Status:**\n"
-                f"* **BL** (Base): `{bl}`\n"
-                f"* **TL** (Target): `{tl}`\n\n"
+                f"* **BL** (Base Language): `{bl}`\n"
+                f"          ↓\n"
+                f"* **TL** (Target Language): `{tl}`\n\n"
                 f"**Commands:**\n"
                 f"* `tr <text>`: Toggle translate (BL ↔ TL).\n"
                 f"* `tr`: Translate last assistant message.\n"
                 f"* `tr-<lang> <text>`: Force target and update TL.\n"
                 f"* `trc <text>`: Translate and continue chat.\n"
-                f"* `TL <lang>` / `BL <lang>`: Manual configuration.\n"
-                f"* `TL` / `BL`: Show current setting."
+                f"* `tl <lang>` / `bl <lang>`: Manual configuration.\n"
+                f"* `tl` / `bl`: Show current setting."
             )
             self.memory[user_id]["service_msg"] = help_msg
             messages[-1]["content"] = "Respond with one single dot."
