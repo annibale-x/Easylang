@@ -61,6 +61,16 @@ Every translation command triggers a state check. Pointers are dynamic and desig
 
 ---
 
+### 🔧 Configuration Parameters (Valves) v0.8.8
+
+| Valve | Default | Description |
+| :--- | :---: | :--- |
+| **Translation Model** | (Current) | Defines the model for internal sub-calls (Detection/Translation). If empty, the filter uses the active session model. |
+| **Back Translation** | `False` | Enables a recursive translation loop. Intercepts the Assistant response and translates it back to the current Base Language (BL). |
+| **Debug** | `True` | **Runtime Logging**. Dumps internal state machines (UID, CID, BL/TL pointers) and execution logs to the Docker/Standard Error console (`⚡ EASYLANG`). |
+
+---
+
 ### ✨ Key Features
 
 * **Dynamic Pivot Anchoring**: Implements a real-time state machine for language pointers. The system automatically re-anchors the Base Language (BL) and Target Language (TL) based on input detection, maintaining bidirectional symmetry without manual state management.
@@ -69,7 +79,9 @@ Every translation command triggers a state check. Pointers are dynamic and desig
 * **Unified Performance Telemetry**: Real-time instrumentation of the entire pipeline. Aggregates metrics from all internal sub-calls (Detection, Pivoting, Translation) to provide precise latency (seconds), cumulative token consumption, and effective throughput (**Tk/s**).
 * **Recursive Back-Translation**: Optional secondary loop for response verification. Intercepts the assistant's output and executes a recursive translation back to the detected Base Language (BL) before final UI rendering.
 * **Low-Latency ISO Bypass**: Hybrid resolution engine that prioritizes 2-letter ISO codes for instant configuration, falling back to LLM-driven dictionary resolution only for full-string language names.
+
 ---
+
 ### 📌 Output & Performance Metrics
 
 Upon completion, every translation displays a real-time telemetry status:
@@ -79,14 +91,6 @@ Upon completion, every translation displays a real-time telemetry status:
 2.  **Tokens**: **Cumulative** consumption across all internal pipeline stages.
 3.  **Speed**: Precise throughput (Tokens / Time).
 
----
 
-### 🔧 Configuration Parameters (Valves) v0.8.8
-
-| Valve | Default | Description |
-| :--- | :---: | :--- |
-| **Translation Model** | (Current) | Defines the model for internal sub-calls (Detection/Translation). If empty, the filter uses the active session model. |
-| **Back Translation** | `False` | Enables a recursive translation loop. Intercepts the Assistant response and translates it back to the current Base Language (BL). |
-| **Debug** | `True` | **Runtime Logging**. Dumps internal state machines (UID, CID, BL/TL pointers) and execution logs to the Docker/Standard Error console (`⚡ EASYLANG`). |
 
 ---
