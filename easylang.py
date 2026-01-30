@@ -1,25 +1,26 @@
 """
-Title: EasyLang - Translation Assistant & Session Anchoring Filter
-Version: 0.7.2
+Title: EasyLang - Stateful Translation Filter for Open WebUI
+Version: 0.7.3
 https://github.com/annibale-x/open-webui-easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
 Author_email: annibale.x@gmail.com
-Description: Professional translation assistant for Open WebUI featuring persistent session anchoring and context-aware logic.
+Description: Synchronous translation filter with persistent session anchoring and regex-based command interception.
 
 MAIN FEATURES:
-- PERSISTENT ANCHORING: Stateful Base Language (BL) and Target Language (TL) tracking per chat_id.
-- FLEXIBLE COMMAND PARSING: Regex-driven triggers (TR, TRC, TL, BL) with case-insensitive, colon-free syntax.
-- DYNAMIC TOGGLE LOGIC: Intelligent language switching based on source detection vs. session anchors.
-- PERFORMANCE TELEMETRY: Real-time tracking of Tokens Per Second (TPS) and execution latency.
-- BRIDGE MODE (TRC): Seamless integration into ongoing dialogues with history restoration and back-translation.
+- SESSION ANCHORING: Persistent chat_id mapping for Base Language (BL) and Target Language (TL).
+- REGEX COMMAND PARSING: Non-strict syntax for TR (translate), TRC (translate/bridge), and TL/BL configuration.
+- DYNAMIC TOGGLE LOGIC: Bi-directional translation based on source detection relative to session anchors.
+- TELEMETRY: Real-time execution latency tracking and status emission via event_emitter.
+- CONTEXTUAL LOOKUP: Automatic assistant history retrieval for zero-argument TR commands.
+- HISTORY INTEGRITY: Original prompt preservation in TRC mode via inlet/outlet memory exchange.
 
 LOGICAL FLOW:
-1. INLET CAPTURE: Identifies commands (TR/TRC) and session management (TL/BL) via regex.
-2. STATE RESOLUTION: Retrieves or initializes BL/TL anchors from chat-specific memory.
-3. LANGUAGE DETECTION: Real-time identification of input language to determine toggle direction.
-4. TRANSLATION EXECUTION: Low-latency processing using dedicated or current LLM models.
-5. OUTLET OVERRIDE: Manages service messages, back-translation for TRC, and final telemetry display.
+1. INLET: Regex identifies triggers; intercept setters/getters or process translation payloads.
+2. DETECTION: LLM-based source language identification (first 200 chars).
+3. RESOLUTION: Anchor-based logic determines the target language (BL <-> TL toggle).
+4. PROCESSING: Full-text translation with stream-suppression for outlet post-processing.
+5. OUTLET: Content override, optional back-translation, and telemetry metadata injection.
 """
 
 import re
