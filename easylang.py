@@ -5,7 +5,7 @@ https://github.com/annibale-x/open-webui-easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
 Author_email: annibale.x@gmail.com
-Description: Open WebUI translation filter with persistent session state management.
+Description: Open WebUI translation filter.
 
 MAIN FEATURES:
 - SIMPLE TRANSLATION HELPER
