@@ -1,31 +1,31 @@
 """
-Title: 🚀 EasyLang: Open WebUI Translation Assistant 
-Version: 0.8.1
+Title: 🚀 EasyLang: Open WebUI Translation Assistant
+Version: 0.8.2
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
 Author_email: annibale.x@gmail.com
 Core Purpose:
-EasyLang is a high-performance translation middleware designed for Open WebUI. 
-It acts as an intelligent interceptor that manages multi-language workflows 
-between the User and the LLM, enabling seamless translation, context-aware 
+EasyLang is a high-performance translation middleware designed for Open WebUI.
+It acts as an intelligent interceptor that manages multi-language workflows
+between the User and the LLM, enabling seamless translation, context-aware
 anchoring, and real-time performance telemetry.
 
 ================================================================================
 
 [ MAIN FEATURES ]
 
-* Surgical Translation (tr/trc): Direct translation or interactive chat 
+* Surgical Translation (tr/trc): Direct translation or interactive chat
     continuation with automatic context recovery.
-* Smart Language Anchoring: Dynamically detects and sets Base (BL) and 
+* Smart Language Anchoring: Dynamically detects and sets Base (BL) and
     Target (TL) languages based on user input patterns.
-* Cross-Session Persistence: Tracks user preferences (BL/TL) and chat 
+* Cross-Session Persistence: Tracks user preferences (BL/TL) and chat
     history metadata using a lightweight in-memory state engine.
-* Performance Telemetry: Precise calculation of latency (seconds), 
+* Performance Telemetry: Precise calculation of latency (seconds),
     token consumption, and processing speed (Tk/s).
-* Gemma/Mistral Optimized: Uses strict system-level instructions for 
+* Gemma/Mistral Optimized: Uses strict system-level instructions for
     intermediate LLM calls to prevent verbosity and ensure deterministic results.
-* Back-Translation Support: Optional verification loop to translate LLM 
+* Back-Translation Support: Optional verification loop to translate LLM
     responses back to the user's native tongue.
 
 [ LOGICAL WORKFLOW (FULL CYCLE) ]
@@ -58,6 +58,7 @@ import time
 from typing import Optional
 from pydantic import BaseModel, Field
 from open_webui.main import generate_chat_completion
+
 
 class Filter:
     class Valves(BaseModel):
@@ -191,19 +192,24 @@ class Filter:
             cmd, lang = cfg_match.group(1).upper(), (
                 cfg_match.group(2).strip().capitalize() if cfg_match.group(2) else None
             )
+
+            cmd_string = (
+                "Target Language" if cmd == "Target Language" else "Base Language"
+            )
+
             if lang:
                 if cmd == "TL":
                     self.chat_targets[user_id] = lang
                 else:
                     self.root_lan[user_id] = lang
-                msg = f"✅ {cmd} set to: **{lang}**"
+                msg = f"🗹 {cmd_string} set to: **{lang}**"
             else:
                 val = (
                     self._get_tl(user_id)
                     if cmd == "TL"
                     else (self._get_bl(user_id) or "Not anchored")
                 )
-                msg = f"ℹ️ Current {cmd}: **{val}**"
+                msg = f"🛈 Current {cmd_string}: **{val}**"
             self.memory[user_id]["service_msg"] = msg
             messages[-1]["content"] = "Respond with one single dot."
             return body
@@ -230,7 +236,12 @@ class Filter:
             messages[-1]["content"] = "."
             return body
 
-        det_sys = "Identify language. Respond ONLY with the language name (e.g. 'Italian'). No other text."
+        # det_sys = "Identify language. Respond ONLY with the language name (e.g. 'Italian'). No other text."
+        det_sys = (
+            "Identify the language of the text. "
+            "Do NOT explain. Do NOT reason. "
+            "Respond ONLY with the language name (e.g. 'Italian')."
+        )
         det_res = await self._get_llm_response(
             f"Detect language: {source_text[:100]}",
             current_model,
@@ -246,19 +257,21 @@ class Filter:
             target_lang = lang_code.capitalize()
             self.chat_targets[user_id] = target_lang
         else:
-            # SURGICAL FIX: Update TL if user writes in a new foreign language
+            # SURGICAL FIX: Third Language Pivot Logic
             stored_bl = self._get_bl(user_id)
-            if source_text and stored_bl and detected_lang.lower() != stored_bl.lower():
-                self.chat_targets[user_id] = detected_lang
-            elif not stored_bl and detected_lang.lower() != current_tl.lower():
-                self.root_lan[user_id] = detected_lang
 
-            stored_root = self._get_bl(user_id) or detected_lang
-            target_lang = (
-                self._get_tl(user_id)
-                if detected_lang.lower() == stored_root.lower()
-                else stored_root
-            )
+            if not stored_bl:
+                self.root_lan[user_id] = detected_lang
+                stored_bl = detected_lang
+
+            if detected_lang.lower() == current_tl.lower():
+                target_lang = stored_bl
+            elif detected_lang.lower() == stored_bl.lower():
+                target_lang = current_tl
+            else:
+                # Pivot: Update BL to new input language, keep TL
+                self.root_lan[user_id] = detected_lang
+                target_lang = current_tl
 
         if __event_emitter__:
             await __event_emitter__(
@@ -271,7 +284,13 @@ class Filter:
                 }
             )
 
-        trans_sys = f"You are a professional translator into {target_lang}. Respond ONLY with translated text."
+        # trans_sys = f"You are a professional translator into {target_lang}. Respond ONLY with translated text."
+        trans_sys = (
+            f"You are a professional translator into {target_lang}. "
+            "Do NOT explain. Do NOT reason. Do NOT add comments. "
+            "Respond ONLY with the translated text."
+        )
+
         translated_text = await self._get_llm_response(
             source_text, current_model, __request__, __user__, user_id, trans_sys
         )
