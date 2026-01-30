@@ -15,38 +15,41 @@ anchoring, and real-time performance telemetry.
 
 [ MAIN FEATURES ]
 
-* Surgical Translation (tr/trc): Direct translation or interactive chat
+* Easy Translation (tr/trc): Direct translation or interactive chat
     continuation with automatic context recovery.
+* ISO 639-1 Dictionary: Dynamic resolution of language names (e.g., "italiano", 
+    "german") into standard 2-letter codes via intermediate LLM calls.
 * Smart Language Anchoring: Dynamically detects and sets Base (BL) and
-    Target (TL) languages based on user input patterns.
-* Cross-Session Persistence: Tracks user preferences (BL/TL) and chat
-    history metadata using a lightweight in-memory state engine.
+    Target (TL) languages with internal ISO-centric fallback (default: 'en').
+* Dynamic Stream Control: Smart bypass that enables native streaming for 'trc'
+    mode while maintaining interceptor control for 'tr' and back-translation.
+* Real-Time Status Emission: Active UI feedback through event emitters tracking
+    every pipeline stage (Detection, Resolution, Translation).
 * Performance Telemetry: Precise calculation of latency (seconds),
     token consumption, and processing speed (Tk/s).
-* Gemma/Mistral Optimized: Uses strict system-level instructions for
-    intermediate LLM calls to prevent verbosity and ensure deterministic results.
 * Back-Translation Support: Optional verification loop to translate LLM
-    responses back to the user's native tongue.
+    responses back to the user's native tongue (BL).
 
 [ LOGICAL WORKFLOW (FULL CYCLE) ]
 
 1.  INLET STAGE (User Request Interception):
     a. IDENTIFICATION: Extract User ID, Chat ID, and Model context.
-    b. COMMAND PARSING: Regex-based routing for 'tr', 'trc', 'TL/BL' or help 't?'.
-    c. CONTEXT RECOVERY: If 'tr' is empty, scrape the last assistant message.
-    d. DETECTION CALL: Zero-temperature LLM execution to identify source language.
-    e. STATE SYNC: Auto-update TL if a new language is detected (Surgical Fix 0.7.19).
-    f. TRANSLATION CALL: Map source text to target language via isolated LLM call.
-    g. INJECTION: Replace user input with a technical prompt or service message.
+    b. COMMAND PARSING: Regex routing for 'tr', 'trc', 'TL/BL' or help 't?'.
+    c. ISO RESOLUTION: LLM-driven conversion of user language input to ISO 639-1.
+    d. CONTEXT RECOVERY: If 'tr' is empty, scrape the last assistant message.
+    e. DETECTION CALL: Zero-temp LLM execution to identify source ISO code.
+    f. LOGICAL PIVOTING: Dynamic swap between BL and TL based on detected input.
+    g. TRANSLATION CALL: isolated LLM call to map source text to target ISO.
+    h. STREAM OPTIMIZATION: Conditionally enable/disable streaming based on mode.
 
 2.  LLM EXECUTION:
-    - The main model processes the modified prompt (e.g., "ACT AS TECHNICAL ASSISTANT IN FRENCH...").
+    - The main model processes the injected system prompt in the target language.
 
 3.  OUTLET STAGE (Response Refinement):
-    a. METRICS AGGREGATION: Collect token usage from the main model response.
+    a. METRICS AGGREGATION: Collect token usage and compute processing speed.
     b. UI POLISHING: Restore original user text in history for 'trc' mode.
-    c. BACK-TRANSLATION (Optional): Re-translate the output to the Base Language.
-    d. TELEMETRY OUTPUT: Emit a status event with final Time, Tokens, and Speed.
+    c. BACK-TRANSLATION (Optional): Recursive LLM loop to return response in BL.
+    d. TELEMETRY OUTPUT: Emit final status event with Time, Tokens, and Speed.
     e. CLEANUP: Clear volatile memory and release the thread.
 
 ================================================================================
