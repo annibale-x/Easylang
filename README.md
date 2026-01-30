@@ -1,4 +1,3 @@
-
 # 🌐 EasyLang: Easy Translation Assistant Filter
 
 Open WebUI filter designed to orchestrate seamless multilingual communication. It manages smart translation workflows, automatic language anchoring, and real-time performance analytics.
@@ -7,13 +6,14 @@ Open WebUI filter designed to orchestrate seamless multilingual communication. I
 ![Open WebUI Plugin](https://img.shields.io/badge/Open%20WebUI-Plugin-blue?style=flat&logo=openai)
 ![License](https://img.shields.io/github/license/annibale-x/EasyLang?color=green)
 
-‼️ **Logic, valves, and anchoring features are subject to rapid refinement** until the stable **v1.x** release.
+⚠️ **IMPORTANT: Early Release & Beta Notice**
+This project is only 3 days old. While the core logic is solid, it has not yet been extensively stress-tested for all possible edge cases. The filter is currently undergoing intensive development and testing. Please be patient with any anomalies or unexpected behavior. If you encounter bugs or logic errors, please open an [issue](https://github.com/annibale-x/Easylang/issues) on GitHub.
 
 ---
 
 ### 📖 The Philosophy
 
-EasyLang was created for power users who operate in multi-language environments removing the "copy-paste-translate" friction by baking the intelligence directly into the prompt bar. 
+EasyLang was created for power users who operate in multi-language environments, removing the "copy-paste-translate" friction by baking the intelligence directly into the prompt bar. 
 
 Whether you are debugging code in English or chatting in French, the filter adapts its anchoring logic to match your current cognitive flow.
 
@@ -52,10 +52,10 @@ Every translation command triggers a state check. Pointers are dynamic and desig
 | :--- | :--- | :--- |
 | **`tl <lang>`** | `tl spanish` | **Manual**: Explicitly sets the default destination language. |
 | **`tr-<iso>`** | `tr-en` | **Forced Context**: Translates the last message and updates the TL pointer. |
-| **`tr- <iso> <text>`** | `tr-fr salut` | **Forced Target**: Translates text and overrides the TL pointer. |
+| **`tr-<iso> <text>`** | `tr-fr salut` | **Forced Target**: Translates text and overrides the TL pointer. |
 
-> [ TIP💡]
-> **Dynamic Re-Anchoring & Symmetry**: EasyLang automatically syncs pointers based on your input to maintain a perfect toggle.
+> 💡 **TIP: Dynamic Re-Anchoring & Symmetry**
+> EasyLang automatically syncs pointers based on your input to maintain a perfect toggle.
 > * **The Toggle Rule**: If you speak **BL**, it translates to **TL**. If you speak **TL**, it translates back to **BL**.
 > * **Auto-Update**: If you speak a **NEW** language (neither BL nor TL), that language immediately becomes the new **BL**, and the system translates it to the current **TL**, keeping the session synchronized.
 
@@ -81,16 +81,47 @@ Every translation command triggers a state check. Pointers are dynamic and desig
 * **Low-Latency ISO Bypass**: Hybrid resolution engine that prioritizes 2-letter ISO codes for instant configuration, falling back to LLM-driven dictionary resolution only for full-string language names.
 
 ---
-
 ### 📌 Output & Performance Metrics
 
 Upon completion, every translation displays a real-time telemetry status:
 `Done | 0.64s | 73 tokens | 110.3 Tk/s`
 
-1.  **Time**: Total round-trip latency including internal LLM calls and sanitization.
-2.  **Tokens**: **Cumulative** consumption across all internal pipeline stages.
-3.  **Speed**: Precise throughput (Tokens / Time).
+1. **Time**: Total round-trip latency including internal LLM calls and sanitization.
+2. **Tokens**: **Cumulative** consumption across all internal pipeline stages.
+3. **Speed**: Precise throughput (Tokens / Time).
 
-
+> ⚠️ **WARNING: Performance Optimization**
+> Reasoning models (e.g., DeepSeek-R1, o1, o3) are significantly slower and more token-intensive due to their internal architecture. To minimize latency and costs, it is highly recommended to set the **Translation Model** valve to a high-throughput, lightweight model.
+>
+> **Recommended for Translation Valve**:
+> * `gpt-4o-mini` (High speed/accuracy balance)
+> * `claude-3-haiku` (Excellent linguistic nuance)
+> * `gemma2:9b` or `llama3.2:3b` (Best for local Ollama deployments)
 
 ---
+
+### 💡 Workflow Example
+
+| User Input | Assistant Output| TL | BL | Description |
+| :--- | :--- | :---: | :---: | :--- |
+| `tr ciao` | hello | `en` | `it` | **Inception**: `it` detected and anchored as BL. Default TL (`en`) applied. |
+| `tr how are you` | come stai | `en` | `it` | **Symmetric Toggle**: Input matches TL (`en`), translates back to BL (`it`). |
+| `tr-es ciao` | hola | `es` | `it` | **Forced Target**: ISO override updates TL to `es` and translates. |
+| `tr` | ¿cómo estás? | `es` | `it` | **Context Recovery**: Scrapes last Assistant msg ("hola") and translates to opposite. |
+| `tr-fr` | salut | `fr` | `it` | **Forced Context**: Scrapes assistant, translates to `fr`, and updates TL. |
+| `trc comment ça va?` | *[LLM Response in FR]* | `fr` | `it` | **Chat Continuation**: Preserves user text in history, sends translation to LLM. |
+| `tr Guten Tag` | salut | `fr` | `de` | **Dynamic Re-Anchoring**: New language `de` detected. It becomes the new BL. |
+| `tl ja` | 🗹 TL set to: **ja** | `ja` | `de` | **Manual ISO Override**: TL pointer explicitly moved to Japanese. |
+| `t?` | *[Status Dashboard]* | `ja` | `de` | **System Audit**: Displays current state and telemetry summary. |
+
+### ✨ Bonus Feature: Text Refinement
+
+Since EasyLang re-processes the input through a high-fidelity LLM translation layer at `temperature: 0`, it acts as an automatic buffer that sanitizes typos and punctuation errors. If the input language matches the forced target, the pointers self-correct.
+
+| User Input (with Typos) | Assistant Output| TL | BL | Description |
+| :--- | :--- | :---: | :---: | :--- |
+| `tl en` | 🗹 TL set to: **en** | `en` | `any` | Manual target setup. |
+| `tr-en Helo wordl,,, may mane is Hannibal!` | **Hello world, my name is Hannibal!** | `en` | `en` | **Self-Correction**: Input detected as `en`. Pointer updates to sync logic while LLM polishes text. |
+
+> ℹ️ **NOTE: Real-Time Text Polisher**
+> This effect effectively serves as a text polisher. The LLM corrects spelling and grammar while the filter ensures your language pointers stay synchronized with your actual speech.
