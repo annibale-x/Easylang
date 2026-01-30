@@ -1,26 +1,9 @@
 """
-Title: EasyLang - Stateful Translation Filter for Open WebUI
+Title: EasyLang - Translation Assistant & Session Anchoring Filter
 Version: 0.7.3
 https://github.com/annibale-x/open-webui-easylang
 Author: Hannibal
-Author_url: https://openwebui.com/u/h4nn1b4l
-Author_email: annibale.x@gmail.com
-Description: Synchronous translation filter with persistent session anchoring and regex-based command interception.
-
-MAIN FEATURES:
-- SESSION ANCHORING: Persistent chat_id mapping for Base Language (BL) and Target Language (TL).
-- REGEX COMMAND PARSING: Non-strict syntax for TR (translate), TRC (translate/bridge), and TL/BL configuration.
-- DYNAMIC TOGGLE LOGIC: Bi-directional translation based on source detection relative to session anchors.
-- TELEMETRY: Real-time execution latency tracking and status emission via event_emitter.
-- CONTEXTUAL LOOKUP: Automatic assistant history retrieval for zero-argument TR commands.
-- HISTORY INTEGRITY: Original prompt preservation in TRC mode via inlet/outlet memory exchange.
-
-LOGICAL FLOW:
-1. INLET: Regex identifies triggers; intercept setters/getters or process translation payloads.
-2. DETECTION: LLM-based source language identification (first 200 chars).
-3. RESOLUTION: Anchor-based logic determines the target language (BL <-> TL toggle).
-4. PROCESSING: Full-text translation with stream-suppression for outlet post-processing.
-5. OUTLET: Content override, optional back-translation, and telemetry metadata injection.
+Description: Enhanced persistent session anchoring using singleton class-based storage.
 """
 
 import re
@@ -49,11 +32,29 @@ class Filter:
         self.memory = {}  # Temporary storage for data exchange between inlet and outlet
         self.root_lan = {}  # Persistent Base Language (BL) anchoring per chat_id
         self.chat_targets = {}  # Persistent Target Language (TL) anchoring per chat_id
+        # New persistent storage for internal ID mapping
+        self._id_cache = {}
 
     def _dbg(self, message: str):
         """Standardized debug logging to stderr."""
         if self.valves.debug:
             print(f"⚡ EASYLANG: {message}", file=sys.stderr, flush=True)
+
+    def _get_chat_id(self, body: dict, user_id: str) -> str:
+        """Getter/Setter for chat_id to survive recursive calls."""
+        cid = body.get("metadata", {}).get("chat_id") or body.get("chat_id")
+        if cid:
+            self._id_cache[user_id] = cid
+            return cid
+        return self._id_cache.get(user_id, "unknown")
+
+    def _get_bl(self, chat_id: str) -> Optional[str]:
+        """Getter for Base Language."""
+        return self.root_lan.get(chat_id)
+
+    def _get_tl(self, chat_id: str) -> str:
+        """Getter for Target Language with valve fallback."""
+        return self.chat_targets.get(chat_id, self.valves.default_lang)
 
     class UserWrapper:
         """Utility class to standardize user object access for the completion engine."""
@@ -100,17 +101,16 @@ class Filter:
         __event_emitter__=None,
     ) -> dict:
         messages = body.get("messages", [])
-        if not messages:
+        if not messages or not __user__:
             return body
         
-        chat_id = body.get("chat_id", "default_chat")
-        content = messages[-1].get("content", "").strip()
         user_id = __user__.get("id", "default")
+        chat_id = self._get_chat_id(body, user_id)
+        content = messages[-1].get("content", "").strip()
         current_model = body.get("model", "")
 
         # 1. SETTERS & GETTERS (TL/BL)
-        # Matches commands like: TL, TL English, BL, BL Italian
-        cfg_match = re.match(r"^(TL|BL)(?:\s+([a-zA-Z]+))?$", content, re.IGNORECASE)
+        cfg_match = re.match(r"^(TL|BL)(?:[\s]([a-zA-Z]+))?$", content, re.I)
         if cfg_match:
             cmd = cfg_match.group(1).upper()
             lang = (
@@ -125,18 +125,16 @@ class Filter:
                 msg = f"✅ {cmd} set to: **{lang}**"
             else:  # GETTER execution
                 if cmd == "TL":
-                    val = self.chat_targets.get(chat_id, self.valves.default_lang)
+                    val = self._get_tl(chat_id)
                 else:
-                    val = self.root_lan.get(chat_id, "Not anchored")
+                    val = self._get_bl(chat_id) or "Not anchored"
                 msg = f"ℹ️ Current {cmd}: **{val}**"
 
-            # Use memory to trigger a service response in the outlet
             self.memory[user_id] = {"service_msg": msg}
             messages[-1]["content"] = "Respond with one single dot."
             return body
 
-        # 2. PARSE TR / TRC (Colon-free regex)
-        # Supports: "tr text", "tr-en text", "trc text", "tr" (for context lookup)
+        # 2. PARSE TR / TRC
         match = re.match(
             r"^(trc|tr)(?:[-/]([a-zA-Z]{2,}))?(?:\s+(.*)|$)",
             content,
@@ -147,14 +145,10 @@ class Filter:
 
         prefix = match.group(1).lower()
         lang_code = match.group(2)
-        # Protect against NoneType: fallback to empty string if no text follows the command
         original_text = match.group(3).strip() if match.group(3) else ""
-
-        # Initialize source_text to prevent UnboundLocalError
         source_text = ""
 
         # 3. RETRIEVE SOURCE
-        # If explicit text is provided, use it; otherwise, look for the last assistant response
         if original_text:
             source_text = original_text
         elif prefix == "tr" and len(messages) > 1:
@@ -169,30 +163,22 @@ class Filter:
             return body
 
         # 4. DETECTION & ANCHORING
-        # Determine the source language to apply the dynamic toggle logic
-        detected_lang = await self._get_llm_response(
-            f"Identify the language of the following text. Respond ONLY with the language name: {source_text[:200]}",
-            current_model,
-            __request__,
-            __user__,
+        det_res = await self._get_llm_response(
+            f"Identify language. Respond ONLY with the name: {source_text[:200]}",
+            current_model, __request__, __user__
         )
+        detected_lang = det_res.strip().capitalize()
 
-        # 4. TARGET RESOLUTION (Prioritizes explicit lang_code > session setters > valves)
+        # 4. TARGET RESOLUTION
         if lang_code:
             target_lang = lang_code.capitalize()
         else:
-            # Anchor the chat's base language if this is the first direct translation request
-            if original_text and chat_id not in self.root_lan:
+            if original_text and not self._get_bl(chat_id):
                 self.root_lan[chat_id] = detected_lang
 
-            stored_root = self.root_lan.get(chat_id, "Italian")
+            stored_root = self._get_bl(chat_id) or "Italian"
+            goal_lang = self._get_tl(chat_id)
 
-            # Resolve the intended target language
-            goal_lang = self.chat_targets.get(chat_id, self.valves.default_lang)
-
-            # Toggle logic:
-            # If input is BL -> translate to TL (goal_lang)
-            # If input is not BL -> translate back to BL (stored_root)
             target_lang = (
                 goal_lang
                 if detected_lang.lower() == stored_root.lower()
@@ -200,29 +186,22 @@ class Filter:
             )
 
         # 5. EXECUTION
-        # Notify the UI that processing has started
         if __event_emitter__:
             await __event_emitter__(
                 {
                     "type": "status",
-                    "data": {
-                        "description": f"Translating to {target_lang}...",
-                        "done": False,
-                    },
+                    "data": {"description": f"Translating to {target_lang}...", "done": False},
                 }
             )
 
         start_t = time.perf_counter()
         translated_text = await self._get_llm_response(
-            f"Translate this text into {target_lang}. Output ONLY the translated text: {source_text}",
-            current_model,
-            __request__,
-            __user__,
+            f"Translate into {target_lang}. Output ONLY translated text: {source_text}",
+            current_model, __request__, __user__
         )
         elapsed = time.perf_counter() - start_t
 
         # 6. STORAGE & ROUTING
-        # Disable streaming to allow outlet override and cleanup
         body["stream"] = False
         self.memory[user_id] = {
             "mode": prefix,
@@ -232,7 +211,6 @@ class Filter:
             "chat_id": chat_id,
         }
 
-        # Strategy: overwrite user content with a dot for 'tr' mode to hide trigger logic
         messages[-1]["content"] = (
             "Respond with one single dot." if prefix == "tr" else translated_text
         )
@@ -245,7 +223,7 @@ class Filter:
         __request__=None,
         __event_emitter__=None,
     ) -> dict:
-        user_id = __user__.get("id", "default")
+        user_id = (__user__ or {}).get("id", "default")
         if user_id not in self.memory:
             return body
         mem = self.memory.pop(user_id)
@@ -254,41 +232,23 @@ class Filter:
             return body
         assistant_msg = body["messages"][-1]
 
-        # Handle service messages (getters/setters output)
         if "service_msg" in mem:
             assistant_msg["content"] = mem["service_msg"]
             return body
 
-        # Restore the original user prompt in the history for TRC mode transparency
         if mem["mode"] == "trc" and len(body["messages"]) > 1:
             body["messages"][-2]["content"] = mem["original_user_text"]
 
-        # Final output logic
         if mem["mode"] == "tr":
             assistant_msg["content"] = mem["translated_input"]
         elif mem["mode"] == "trc" and self.valves.back_translation:
-            # Back-translation loop for bridge mode
-            target = self.root_lan.get(mem["chat_id"], "Italian")
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": f"Back-Translating to {target}...",
-                            "done": False,
-                        },
-                    }
-                )
-
+            target = self._get_bl(mem["chat_id"]) or "Italian"
             back_text = await self._get_llm_response(
-                f"Translate this text into {target}. Output ONLY the translated text: {assistant_msg['content']}",
-                body.get("model", ""),
-                __request__,
-                __user__,
+                f"Translate into {target}. Output ONLY translated text: {assistant_msg['content']}",
+                body.get("model", ""), __request__, __user__
             )
             assistant_msg["content"] = back_text
 
-        # Update final status with latency/telemetry
         if __event_emitter__:
             await __event_emitter__(
                 {
