@@ -1,9 +1,9 @@
 """
 Title: EasyLang - Translation Assistant & Session Anchoring Filter
-Version: 0.7.3
+Version: 0.7.5
 https://github.com/annibale-x/open-webui-easylang
 Author: Hannibal
-Description: Enhanced persistent session anchoring using singleton class-based storage.
+Description: User-based persistent anchoring to ensure settings survive across different chats.
 """
 
 import re
@@ -29,10 +29,10 @@ class Filter:
 
     def __init__(self):
         self.valves = self.Valves()
-        self.memory = {}  # Temporary storage for data exchange between inlet and outlet
-        self.root_lan = {}  # Persistent Base Language (BL) anchoring per chat_id
-        self.chat_targets = {}  # Persistent Target Language (TL) anchoring per chat_id
-        # New persistent storage for internal ID mapping
+        self.memory = {}  
+        # Changed keys from chat_id to user_id for cross-chat persistence
+        self.root_lan = {}  
+        self.chat_targets = {}  
         self._id_cache = {}
 
     def _dbg(self, message: str):
@@ -48,16 +48,15 @@ class Filter:
             return cid
         return self._id_cache.get(user_id, "unknown")
 
-    def _get_bl(self, chat_id: str) -> Optional[str]:
-        """Getter for Base Language."""
-        return self.root_lan.get(chat_id)
+    def _get_bl(self, user_id: str) -> Optional[str]:
+        """Getter for Base Language (User-based)."""
+        return self.root_lan.get(user_id)
 
-    def _get_tl(self, chat_id: str) -> str:
-        """Getter for Target Language with valve fallback."""
-        return self.chat_targets.get(chat_id, self.valves.default_lang)
+    def _get_tl(self, user_id: str) -> str:
+        """Getter for Target Language (User-based) with valve fallback."""
+        return self.chat_targets.get(user_id, self.valves.default_lang)
 
     class UserWrapper:
-        """Utility class to standardize user object access for the completion engine."""
         def __init__(self, user_dict):
             self.role = "user"
             self.id = "user_id"
@@ -70,7 +69,6 @@ class Filter:
     async def _get_llm_response(
         self, prompt: str, model_id: str, __request__, __user__
     ) -> str:
-        """Helper to manage LLM calls with forced temperature for translation consistency."""
         selected_model = (
             self.valves.translation_model if self.valves.translation_model else model_id
         )
@@ -106,10 +104,16 @@ class Filter:
         
         user_id = __user__.get("id", "default")
         chat_id = self._get_chat_id(body, user_id)
+        
+        # DEBUG DUMP - Checking user-based persistence
+        self._dbg(f"DUMP - ChatID: {chat_id} | UserID: {user_id}")
+        self._dbg(f"DUMP - Current BL for User: {self._get_bl(user_id)}")
+        self._dbg(f"DUMP - Current TL for User: {self._get_tl(user_id)}")
+
         content = messages[-1].get("content", "").strip()
         current_model = body.get("model", "")
 
-        # 1. SETTERS & GETTERS (TL/BL)
+        # 1. SETTERS & GETTERS (TL/BL) - Now using user_id
         cfg_match = re.match(r"^(TL|BL)(?:[\s]([a-zA-Z]+))?$", content, re.I)
         if cfg_match:
             cmd = cfg_match.group(1).upper()
@@ -117,17 +121,17 @@ class Filter:
                 cfg_match.group(2).strip().capitalize() if cfg_match.group(2) else None
             )
 
-            if lang:  # SETTER execution
+            if lang:  
                 if cmd == "TL":
-                    self.chat_targets[chat_id] = lang
+                    self.chat_targets[user_id] = lang
                 else:
-                    self.root_lan[chat_id] = lang
+                    self.root_lan[user_id] = lang
                 msg = f"✅ {cmd} set to: **{lang}**"
-            else:  # GETTER execution
+            else:  
                 if cmd == "TL":
-                    val = self._get_tl(chat_id)
+                    val = self._get_tl(user_id)
                 else:
-                    val = self._get_bl(chat_id) or "Not anchored"
+                    val = self._get_bl(user_id) or "Not anchored"
                 msg = f"ℹ️ Current {cmd}: **{val}**"
 
             self.memory[user_id] = {"service_msg": msg}
@@ -169,15 +173,15 @@ class Filter:
         )
         detected_lang = det_res.strip().capitalize()
 
-        # 4. TARGET RESOLUTION
+        # 4. TARGET RESOLUTION - Now checking user_id anchors
         if lang_code:
             target_lang = lang_code.capitalize()
         else:
-            if original_text and not self._get_bl(chat_id):
-                self.root_lan[chat_id] = detected_lang
+            if original_text and not self._get_bl(user_id):
+                self.root_lan[user_id] = detected_lang
 
-            stored_root = self._get_bl(chat_id) or "Italian"
-            goal_lang = self._get_tl(chat_id)
+            stored_root = self._get_bl(user_id) or "Italian"
+            goal_lang = self._get_tl(user_id)
 
             target_lang = (
                 goal_lang
@@ -242,7 +246,7 @@ class Filter:
         if mem["mode"] == "tr":
             assistant_msg["content"] = mem["translated_input"]
         elif mem["mode"] == "trc" and self.valves.back_translation:
-            target = self._get_bl(mem["chat_id"]) or "Italian"
+            target = self._get_bl(user_id) or "Italian"
             back_text = await self._get_llm_response(
                 f"Translate into {target}. Output ONLY translated text: {assistant_msg['content']}",
                 body.get("model", ""), __request__, __user__
