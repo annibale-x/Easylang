@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.8
+Version: 0.8.9
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -15,46 +15,23 @@ anchoring, and real-time performance telemetry.
 
 [ MAIN FEATURES ]
 
-* Surgical Translation (tr/trc): Direct translation or interactive chat 
-    continuation with advanced context recovery and ISO-pivoting logic.
-* Hybrid ISO Resolution: Instant bypass for 2-letter codes and LLM-driven 
-    dictionary resolution for full language names (e.g., "italiano" -> "it").
-* Thinking Inbibitor (Anti-CoT): System-level directives to force immediate 
-    responses, skipping reasoning phases in models like DeepSeek-R1 or o1.
-* DeepSeek & XML Sanitization: Multi-stage Regex cleaning to strip <think> 
-    blocks and residual <text> tags from the final output.
-* Smart Language Anchoring: Automated detection of Base Language (BL) on first 
-    interact, with dynamic Target Language (TL) pivoting (Default: 'en').
-* Performance Telemetry 2.0: Real-time tracking of latency, cumulative token 
-    usage across sub-calls, and processing speed (Tk/s).
-* Back-Translation Loop: Optional recursive translation of LLM responses 
-    back to the user's native tongue (BL) for verification.
-
-[ LOGICAL WORKFLOW (FULL CYCLE) ]
-
-1.  INLET STAGE (User Request Interception):
-    a. COMMAND PARSING: Regex routing for 'tr', 'trc', 'TL/BL' or help 't?'.
-    b. ISO BYPASS: Instant validation of 2-letter codes to minimize LLM latency.
-    c. CONTEXT RECOVERY: Last assistant message scraping for empty 'tr' commands.
-    d. DETECTION & ANTI-COT: Zero-temp LLM call with "Respond immediately" 
-       directives to identify source ISO code without thinking latency.
-    e. LOGICAL PIVOTING: Dynamic target selection (TL if detected != TL, else BL).
-    f. TRANSLATED INJECTION: Targeted translation call with XML wrapping and 
-       CoT-suppression system prompts.
-
-2.  LLM EXECUTION:
-    - Main model processes the request with a language-specific system wrapper.
-
-3.  OUTLET STAGE (Response Refinement):
-    - METRICS: Aggregate tokens from all sub-calls (det, trans, back-trans).
-    - SANITIZATION: Surgical removal of reasoning blocks and XML artifacts.
-    - BACK-TRANSLATION: Optional secondary loop into BL via translation valve.
-    - TELEMETRY: Final status emission (Time, Total Tokens, Tk/s).
-    - MEMORY CLEANUP: Volatile state release and ID cache update.
+* Surgical Translation (tr/trc): Direct translation or interactive chat
+    continuation with automatic context recovery.
+* ISO 639-1 Dictionary: Dynamic resolution of language names (e.g., "italiano",
+    "german") into standard 2-letter codes via intermediate LLM calls.
+* Smart Language Anchoring: Dynamically detects and sets Base (BL) and
+    Target (TL) languages with internal ISO-centric fallback (default: 'en').
+* Dynamic Stream Control: Smart bypass that enables native streaming for 'trc'
+    mode while maintaining interceptor control for 'tr' and back-translation.
+* Real-Time Status Emission: Active UI feedback through event emitters tracking
+    every pipeline stage (Detection, Resolution, Translation).
+* Performance Telemetry: Precise calculation of latency (seconds),
+    token consumption, and processing speed (Tk/s).
+* Back-Translation Support: Optional verification loop to translate LLM
+    responses back to the user's native tongue (BL).
 
 ================================================================================
 """
-
 
 import re
 import sys
@@ -195,39 +172,6 @@ class Filter:
             messages[-1]["content"] = "."
             return body
 
-        cfg_match = re.match(r"^(TL|BL)(?:[\s](.+))?$", content, re.I)
-        if cfg_match:
-            cmd, lang_raw = cfg_match.group(1).upper(), (
-                cfg_match.group(2).strip() if cfg_match.group(2) else None
-            )
-            if lang_raw:
-                lang = (
-                    lang_raw.lower()
-                    if len(lang_raw) == 2
-                    else await self._get_llm_response(
-                        f"lang:{lang_raw}",
-                        current_model,
-                        __request__,
-                        __user__,
-                        user_id,
-                        "Respond immediately. ISO 639-1 code ONLY.",
-                    )
-                )
-                if cmd == "TL":
-                    self.chat_targets[user_id] = lang
-                else:
-                    self.root_lan[user_id] = lang
-                msg = f"🗹 {cmd} set to: **{lang}**"
-            else:
-                msg = f"🛈 Current {cmd}: **{self._get_tl(user_id) if cmd=='TL' else (self._get_bl(user_id) or 'Auto')}**"
-            self.memory[user_id] = {
-                "total_tokens": 0,
-                "start_time": time.perf_counter(),
-                "service_msg": msg,
-            }
-            messages[-1]["content"] = "."
-            return body
-
         # Translation Logic
         match = re.match(
             r"^(trc|tr)(?:[-/]([a-zA-Z]{2,}))?(?:\s+(.*)|$)", content, re.I | re.DOTALL
@@ -242,29 +186,36 @@ class Filter:
             (match.group(3).strip() if match.group(3) else ""),
         )
 
+        # Context Recovery (Scrapes assistant if source_text is empty, even with tr-lang)
         if not source_text and prefix == "tr":
             for m in reversed(messages[:-1]):
                 if m.get("role") == "assistant":
                     source_text = m.get("content", "")
                     break
+
         if not source_text:
+            self.memory[user_id][
+                "service_msg"
+            ] = "⚠️ **EasyLang: No context found to translate.**"
+            messages[-1]["content"] = "."
             return body
 
-        # Detection
-        det_sys = "Respond immediately without thinking. Identify ISO 639-1 code. 2-letter code ONLY."
-        detected_lang = await self._get_llm_response(
-            f"Detect: {source_text[:100]}",
-            current_model,
-            __request__,
-            __user__,
-            user_id,
-            det_sys,
-        )
-
-        # Fixed Pivoting
+        # Target Language Resolution
         if lang_code and len(lang_code) == 2:
             target_lang = lang_code.lower()
+            self.chat_targets[user_id] = target_lang  # Update TL pointer
         else:
+            # Detection is needed only if no explicit lang_code is provided
+            det_sys = "Respond immediately without thinking. Identify ISO 639-1 code. 2-letter code ONLY."
+            detected_lang = await self._get_llm_response(
+                f"Detect: {source_text[:100]}",
+                current_model,
+                __request__,
+                __user__,
+                user_id,
+                det_sys,
+            )
+
             bl, tl = self._get_bl(user_id), self._get_tl(user_id)
             if not bl:
                 bl = detected_lang
