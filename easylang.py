@@ -1,9 +1,8 @@
 """
-Title: EasyLang - Translation Assistant & Session Anchoring Filter
-Version: 0.7.6
-https://github.com/annibale-x/open-webui-easylang
+Title: EasyLang - Global Translation Assistant
+Version: 0.7.7
 Author: Hannibal
-Description: Dynamic TL anchoring via tr-lang commands and user-persistent state.
+Description: User-based persistent anchoring with help command (t?) and debug toggle.
 """
 
 import re
@@ -19,13 +18,13 @@ class Filter:
         translation_model: str = Field(
             default="", description="Model for translation. Empty = current."
         )
-        default_lang: str = Field(
-            default="English", description="Target language if not specified."
+        default_target_lang: str = Field(
+            default="English", description="Fallback target language."
         )
         back_translation: bool = Field(
             default=False, description="Translate assistant response back to the base language."
         )
-        debug: bool = Field(default=True)
+        debug: bool = Field(default=True, description="Enable detailed state dumps in logs.")
 
     def __init__(self):
         self.valves = self.Valves()
@@ -48,12 +47,10 @@ class Filter:
         return self._id_cache.get(user_id, "unknown")
 
     def _get_bl(self, user_id: str) -> Optional[str]:
-        """Getter for Base Language (User-based)."""
         return self.root_lan.get(user_id)
 
     def _get_tl(self, user_id: str) -> str:
-        """Getter for Target Language (User-based) with valve fallback."""
-        return self.chat_targets.get(user_id, self.valves.default_lang)
+        return self.chat_targets.get(user_id, self.valves.default_target_lang)
 
     class UserWrapper:
         def __init__(self, user_dict):
@@ -103,11 +100,36 @@ class Filter:
         
         user_id = __user__.get("id", "default")
         chat_id = self._get_chat_id(body, user_id)
-        
         content = messages[-1].get("content", "").strip()
         current_model = body.get("model", "")
 
-        # 1. SETTERS & GETTERS (TL/BL)
+        if self.valves.debug:
+            self._dbg(f"DUMP - ChatID: {chat_id} | UserID: {user_id}")
+            self._dbg(f"DUMP - BL Map: {self.root_lan}")
+            self._dbg(f"DUMP - TL Map: {self.chat_targets}")
+
+        # 1. HELP COMMAND (t?)
+        if content.lower() == "t?":
+            bl = self._get_bl(user_id) or "Not anchored (Auto)"
+            tl = self._get_tl(user_id)
+            help_msg = (
+                f"### 🌐 EasyLang Helper\n"
+                f"**Current Status:**\n"
+                f"* **BL** (Base): `{bl}`\n"
+                f"* **TL** (Target): `{tl}`\n\n"
+                f"**Commands:**\n"
+                f"* `tr <text>`: Toggle translate (BL ↔ TL).\n"
+                f"* `tr`: Translate last assistant message.\n"
+                f"* `tr-<lang> <text>`: Force target and update TL.\n"
+                f"* `trc <text>`: Translate and continue chat.\n"
+                f"* `TL <lang>` / `BL <lang>`: Manual configuration.\n"
+                f"* `TL` / `BL`: Show current setting."
+            )
+            self.memory[user_id] = {"service_msg": help_msg}
+            messages[-1]["content"] = "Respond with one single dot."
+            return body
+
+        # 2. CONFIGURATION COMMANDS (TL/BL)
         cfg_match = re.match(r"^(TL|BL)(?:[\s]([a-zA-Z]+))?$", content, re.I)
         if cfg_match:
             cmd = cfg_match.group(1).upper()
@@ -132,7 +154,7 @@ class Filter:
             messages[-1]["content"] = "Respond with one single dot."
             return body
 
-        # 2. PARSE TR / TRC
+        # 3. TRANSLATION COMMANDS (TR/TRC)
         match = re.match(
             r"^(trc|tr)(?:[-/]([a-zA-Z]{2,}))?(?:\s+(.*)|$)",
             content,
@@ -146,7 +168,6 @@ class Filter:
         original_text = match.group(3).strip() if match.group(3) else ""
         source_text = ""
 
-        # 3. RETRIEVE SOURCE
         if original_text:
             source_text = original_text
         elif prefix == "tr" and len(messages) > 1:
@@ -160,24 +181,20 @@ class Filter:
             messages[-1]["content"] = "Respond with one single dot."
             return body
 
-        # 4. DETECTION & ANCHORING
         det_res = await self._get_llm_response(
             f"Identify language. Respond ONLY with the name: {source_text[:200]}",
             current_model, __request__, __user__
         )
         detected_lang = det_res.strip().capitalize()
 
-        # 4. TARGET RESOLUTION & DYNAMIC ANCHORING
         if lang_code:
             target_lang = lang_code.capitalize()
-            # DYNAMIC ANCHORING: If user explicitly used tr-lang, update the persistent TL
             self.chat_targets[user_id] = target_lang
-            self._dbg(f"Dynamic TL anchor updated to: {target_lang}")
         else:
             if original_text and not self._get_bl(user_id):
                 self.root_lan[user_id] = detected_lang
 
-            stored_root = self._get_bl(user_id) or "Italian"
+            stored_root = self._get_bl(user_id) or detected_lang
             goal_lang = self._get_tl(user_id)
 
             target_lang = (
@@ -186,7 +203,6 @@ class Filter:
                 else stored_root
             )
 
-        # 5. EXECUTION
         if __event_emitter__:
             await __event_emitter__(
                 {
@@ -202,7 +218,6 @@ class Filter:
         )
         elapsed = time.perf_counter() - start_t
 
-        # 6. STORAGE & ROUTING
         body["stream"] = False
         self.memory[user_id] = {
             "mode": prefix,
@@ -243,7 +258,7 @@ class Filter:
         if mem["mode"] == "tr":
             assistant_msg["content"] = mem["translated_input"]
         elif mem["mode"] == "trc" and self.valves.back_translation:
-            target = self._get_bl(user_id) or "Italian"
+            target = self._get_bl(user_id) or self.valves.default_target_lang
             back_text = await self._get_llm_response(
                 f"Translate into {target}. Output ONLY translated text: {assistant_msg['content']}",
                 body.get("model", ""), __request__, __user__
