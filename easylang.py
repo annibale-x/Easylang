@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.4
+Version: 0.8.5
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -15,9 +15,9 @@ anchoring, and real-time performance telemetry.
 
 [ MAIN FEATURES ]
 
-* Easy Translation (tr/trc): Direct translation or interactive chat
+* Surgical Translation (tr/trc): Direct translation or interactive chat
     continuation with automatic context recovery.
-* ISO 639-1 Dictionary: Dynamic resolution of language names (e.g., "italiano", 
+* ISO 639-1 Dictionary: Dynamic resolution of language names (e.g., "italiano",
     "german") into standard 2-letter codes via intermediate LLM calls.
 * Smart Language Anchoring: Dynamically detects and sets Base (BL) and
     Target (TL) languages with internal ISO-centric fallback (default: 'en').
@@ -93,7 +93,7 @@ class Filter:
         return self.root_lan.get(user_id)
 
     def _get_tl(self, user_id: str) -> str:
-        # Internal ISO fallback to ensure logic consistency (en vs English)
+        # Internal ISO fallback for logic consistency
         return self.chat_targets.get(user_id, "en")
 
     class UserWrapper:
@@ -134,7 +134,7 @@ class Filter:
                 usage = response.get("usage", {})
                 if user_id in self.memory:
                     self.memory[user_id]["total_tokens"] += usage.get("total_tokens", 0)
-                # Pro-tip: normalization is key for reliable ISO matching
+                # Ensure output is a clean lowercase ISO code or text
                 return (
                     response["choices"][0]["message"]["content"]
                     .strip()
@@ -178,12 +178,16 @@ class Filter:
             help_msg = (
                 f"### 🌐 EasyLang Helper\n"
                 f"**Current Status:**\n"
-                f"* **BL**: `{bl}`\n"
+                f"* **BL** (Base Language): `{bl}`\n"
                 f"          ↓\n"
-                f"* **TL**: `{tl}`\n\n"
+                f"* **TL** (Target Language): `{tl}`\n\n"
                 f"**Commands:**\n"
                 f"* `tr <text>`: Toggle translate (BL ↔ TL).\n"
-                f"* `tl <lang>` / `bl <lang>`: Manual configuration."
+                f"* `tr`: Translate last assistant message.\n"
+                f"* `tr-<lang> <text>`: Force target and update TL.\n"
+                f"* `trc <text>`: Translate and continue chat.\n"
+                f"* `tl <lang>` / `bl <lang>`: Manual configuration.\n"
+                f"* `tl` / `bl`: Show current setting."
             )
             self.memory[user_id]["service_msg"] = help_msg
             messages[-1]["content"] = "Respond with one single dot."
@@ -196,10 +200,17 @@ class Filter:
             )
             cmd_string = "Target Language" if cmd == "TL" else "Base Language"
             if lang_raw:
-                # Resolve language name to ISO 639-1 via LLM dictionary
                 if __event_emitter__:
-                    await __event_emitter__({"type": "status", "data": {"description": f"Resolving {cmd_string} to ISO...", "done": False}})
-                
+                    await __event_emitter__(
+                        {
+                            "type": "status",
+                            "data": {
+                                "description": f"Resolving {cmd_string} to ISO...",
+                                "done": False,
+                            },
+                        }
+                    )
+
                 iso_sys = "Act as data dictionary. Give ONLY the ISO 639-1 code for language:<lang>"
                 lang = await self._get_llm_response(
                     f"language:{lang_raw}",
@@ -237,8 +248,6 @@ class Filter:
             match.group(2),
             (match.group(3).strip() if match.group(3) else ""),
         )
-        
-        # Scrape context if tr is empty
         if not source_text and prefix == "tr":
             for msg in reversed(messages[:-1]):
                 if msg.get("role") == "assistant":
@@ -249,9 +258,16 @@ class Filter:
             messages[-1]["content"] = "."
             return body
 
-        # Perform Zero-Shot Language Detection
         if __event_emitter__:
-            await __event_emitter__({"type": "status", "data": {"description": "Detecting source language...", "done": False}})
+            await __event_emitter__(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": "Detecting source language ISO...",
+                        "done": False,
+                    },
+                }
+            )
 
         det_sys = "Identify the language of the text. Respond ONLY with the ISO 639-1 code (e.g. 'it', 'en', 'de')."
         detected_lang = await self._get_llm_response(
@@ -265,10 +281,16 @@ class Filter:
         current_tl = self._get_tl(user_id)
 
         if lang_code:
-            # Force target via command suffix
             if __event_emitter__:
-                await __event_emitter__({"type": "status", "data": {"description": f"Resolving forced language: {lang_code}...", "done": False}})
-            
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "description": f"Resolving target language: {lang_code}...",
+                            "done": False,
+                        },
+                    }
+                )
             iso_sys = "Act as data dictionary. Give ONLY the ISO 639-1 code for language:<lang>"
             target_lang = await self._get_llm_response(
                 f"language:{lang_code}",
@@ -280,7 +302,6 @@ class Filter:
             )
             self.chat_targets[user_id] = target_lang
         else:
-            # Logical pivoting between BL and TL
             stored_bl = self._get_bl(user_id)
             if not stored_bl:
                 self.root_lan[user_id] = detected_lang
@@ -293,13 +314,32 @@ class Filter:
                 self.root_lan[user_id] = detected_lang
                 target_lang = current_tl
 
-        # Core Translation Block
         if __event_emitter__:
-            await __event_emitter__({"type": "status", "data": {"description": f"Translating to {target_lang}...", "done": False}})
+            await __event_emitter__(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": f"Translating to {target_lang}...",
+                        "done": False,
+                    },
+                }
+            )
 
-        trans_sys = f"You are a professional translator into ISO:{target_lang}. Respond ONLY with the translated text."
+        # Sostituisci la definizione di trans_sys con questa:
+        trans_sys = (
+            f"You are a professional translator into ISO:{target_lang}. "
+            "Translate the text inside <text> tags. "
+            "Do NOT answer the question. Respond ONLY with the translation."
+        )
+
+        # E la chiamata deve diventare:
         translated_text = await self._get_llm_response(
-            source_text, current_model, __request__, __user__, user_id, trans_sys
+            f"<text>{source_text}</text>",
+            current_model,
+            __request__,
+            __user__,
+            user_id,
+            trans_sys,
         )
 
         self.memory[user_id].update(
@@ -310,12 +350,12 @@ class Filter:
                 "chat_id": chat_id,
             }
         )
-        
-        # Dynamic Stream Handling: enabled only for standard trc without back-translation
+
+        # Dynamic Stream Handling
         body["stream"] = (
             False if (prefix == "tr" or self.valves.back_translation) else True
         )
-        
+
         messages[-1]["content"] = (
             f"ACT AS TECHNICAL ASSISTANT. ANSWER IN {target_lang} TO THIS REQUEST: {translated_text}"
             if prefix == "trc"
@@ -336,7 +376,6 @@ class Filter:
         mem = self.memory.pop(user_id)
         assistant_msg = body["messages"][-1]
 
-        # Finalize service messages (help/status)
         if "service_msg" in mem:
             assistant_msg["content"] = mem["service_msg"]
             elapsed = time.perf_counter() - mem["start_time"]
@@ -350,27 +389,33 @@ class Filter:
             return body
 
         mem["total_tokens"] += body.get("usage", {}).get("total_tokens", 0)
-
-        # Restore UI history for continuity
         if mem["mode"] == "trc" and len(body["messages"]) > 1:
             body["messages"][-2]["content"] = mem["original_user_text"]
 
         if mem["mode"] == "tr":
             assistant_msg["content"] = mem["translated_input"]
         elif mem["mode"] == "trc" and self.valves.back_translation:
-            # Back-translation loop for quality assurance
             target = self._get_bl(user_id) or "en"
             if __event_emitter__:
                 await __event_emitter__(
                     {
                         "type": "status",
-                        "data": {"description": f"Back-translating response to {target}...", "done": False},
+                        "data": {
+                            "description": f"Back-translating to {target}...",
+                            "done": False,
+                        },
                     }
                 )
             self.memory[user_id] = mem
-            back_sys = f"Translate into {target}. Respond ONLY with translated text."
+            # Sostituisci la definizione di back_sys con questa:
+            back_sys = (
+                f"Translate the text inside <text> tags into ISO:{target}. "
+                "Respond ONLY with the translation."
+            )
+
+            # E la chiamata deve diventare:
             back_text = await self._get_llm_response(
-                assistant_msg["content"],
+                f"<text>{assistant_msg['content']}</text>",
                 body.get("model", ""),
                 __request__,
                 __user__,
@@ -380,7 +425,6 @@ class Filter:
             assistant_msg["content"] = back_text
             mem = self.memory.pop(user_id)
 
-        # Emission of final performance telemetry
         elapsed = time.perf_counter() - mem["start_time"]
         total_tk = mem["total_tokens"]
         speed = round(total_tk / elapsed, 1) if elapsed > 0 else 0
