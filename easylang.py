@@ -1,7 +1,25 @@
 """
-title: EasyLang Filter
-author: Hannibal
-version: 0.6.1
+Title: EasyLang - Translation Assistant & Session Anchoring Filter
+Version: 0.7.1
+https://github.com/annibale-x/open-webui-easylang
+Author: Hannibal
+Author_url: https://openwebui.com/u/h4nn1b4l
+Author_email: annibale.x@gmail.com
+Description: Professional translation assistant for Open WebUI featuring persistent session anchoring and context-aware logic.
+
+MAIN FEATURES:
+- PERSISTENT ANCHORING: Stateful Base Language (BL) and Target Language (TL) tracking per chat_id.
+- FLEXIBLE COMMAND PARSING: Regex-driven triggers (TR, TRC, TL, BL) with case-insensitive, colon-free syntax.
+- DYNAMIC TOGGLE LOGIC: Intelligent language switching based on source detection vs. session anchors.
+- PERFORMANCE TELEMETRY: Real-time tracking of Tokens Per Second (TPS) and execution latency.
+- BRIDGE MODE (TRC): Seamless integration into ongoing dialogues with history restoration and back-translation.
+
+LOGICAL FLOW:
+1. INLET CAPTURE: Identifies commands (TR/TRC) and session management (TL/BL) via regex.
+2. STATE RESOLUTION: Retrieves or initializes BL/TL anchors from chat-specific memory.
+3. LANGUAGE DETECTION: Real-time identification of input language to determine toggle direction.
+4. TRANSLATION EXECUTION: Low-latency processing using dedicated or current LLM models.
+5. OUTLET OVERRIDE: Manages service messages, back-translation for TRC, and final telemetry display.
 """
 
 import re
@@ -85,31 +103,48 @@ class Filter:
         user_id = __user__.get("id", "default")
         current_model = body.get("model", "")
 
-        # 1. COMMAND tl:lang
-        tl_match = re.match(r"^tl\:([a-zA-Z]+)", content, re.IGNORECASE)
-        if tl_match:
-            new_tl = tl_match.group(1).strip().capitalize()
-            self.chat_targets[chat_id] = new_tl
-            self.memory[user_id] = {
-                "service_msg": f"✅ Target language set to: **{new_tl}**"
-            }
+        # 1. SETTERS & GETTERS (TL/BL)
+        # Accetta: TL, TL English, BL, BL Italian (case-insensitive)
+        cfg_match = re.match(r"^(TL|BL)(?:\s+([a-zA-Z]+))?$", content, re.IGNORECASE)
+        if cfg_match:
+            cmd = cfg_match.group(1).upper()
+            lang = (
+                cfg_match.group(2).strip().capitalize() if cfg_match.group(2) else None
+            )
+
+            if lang:  # SETTER (es: TL English)
+                if cmd == "TL":
+                    self.chat_targets[chat_id] = lang
+                else:
+                    self.root_lan[chat_id] = lang
+                msg = f"✅ {cmd} set to: **{lang}**"
+            else:  # GETTER (es: TL)
+                if cmd == "TL":
+                    val = self.chat_targets.get(chat_id, self.valves.default_lang)
+                else:
+                    val = self.root_lan.get(chat_id, "Not anchored")
+                msg = f"ℹ️ Current {cmd}: **{val}**"
+
+            self.memory[user_id] = {"service_msg": msg}
             messages[-1]["content"] = "Respond with one single dot."
             return body
 
-        # 2. PARSE tr/trc
+        # 2. PARSE TR / TRC (Senza : obbligatorio)
+        # Accetta: "tr testo", "tr-en testo", "trc testo", "tr" (per contesto)
         match = re.match(
-            r"^(tr|trc)(?:[-/]([a-zA-Z]{2,}))?\:\s*(.*)",
+            r"^(trc|tr)(?:[-/]([a-zA-Z]{2,}))?(?:\s+(.*)|$)",
             content,
             re.IGNORECASE | re.DOTALL,
         )
         if not match:
             return body
 
-        prefix, lang_code, original_text = (
-            match.group(1).lower(),
-            match.group(2),
-            match.group(3).strip(),
-        )
+        prefix = match.group(1).lower()
+        lang_code = match.group(2)
+        # Protezione contro NoneType: se non c'è testo dopo il comando, usa ""
+        original_text = match.group(3).strip() if match.group(3) else ""
+
+        # Inizializzazione source_text per evitare UnboundLocalError
         source_text = ""
 
         # 3. RETRIEVE SOURCE (Dalla 0.3.7)
@@ -134,17 +169,22 @@ class Filter:
             __user__,
         )
 
-        # Logica di risoluzione target della 0.3.7
+        # 4. TARGET RESOLUTION (Modificata per supportare i Setters)
         if lang_code:
             target_lang = lang_code.capitalize()
         else:
-            if original_text:
-                self.root_lan[chat_id] = detected_lang  # ANCORAGGIO QUI
+            if original_text and chat_id not in self.root_lan:
+                self.root_lan[chat_id] = detected_lang
 
             stored_root = self.root_lan.get(chat_id, "Italian")
-            # Toggle logic: se rileva BL, vai a Valve.lang, altrimenti torna a BL.
+
+            # Recupera la lingua obiettivo: prima dai Setters (chat_targets),
+            # poi dalle Valves (default_lang).
+            goal_lang = self.chat_targets.get(chat_id, self.valves.default_lang)
+
+            # Toggle logic corretta
             target_lang = (
-                self.valves.default_lang
+                goal_lang
                 if detected_lang.lower() == stored_root.lower()
                 else stored_root
             )
