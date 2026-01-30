@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.6
+Version: 0.8.8
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -55,6 +55,7 @@ anchoring, and real-time performance telemetry.
 ================================================================================
 """
 
+
 import re
 import sys
 import time
@@ -93,7 +94,6 @@ class Filter:
         return self.root_lan.get(user_id)
 
     def _get_tl(self, user_id: str) -> str:
-        # Internal ISO fallback for logic consistency
         return self.chat_targets.get(user_id, "en")
 
     class UserWrapper:
@@ -131,22 +131,28 @@ class Filter:
                 __request__, payload, user=self.UserWrapper(__user__)
             )
             if response:
-                content = response["choices"][0]["message"]["content"].strip()
-                
-                # Rimuoviamo tutto ciò che sta dentro i tag <think>...</think>
-                # Questo elimina il tempo di elaborazione inutile se il modello 
-                # ha già generato ma non lo abbiamo ancora mostrato.
-                content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-                
-                # Protezione per DeepSeek: rimuove anche eventuali tag XML residui
-                content = re.sub(r'</?text>', '', content).strip()
+                if user_id in self.memory:
+                    self.memory[user_id]["total_tokens"] += response.get(
+                        "usage", {}
+                    ).get("total_tokens", 0)
 
-                # Se stiamo cercando un codice ISO (Regex già implementata)
-                if "iso" in system_instruction.lower():
-                    match = re.search(r'\b([a-z]{2})\b', content.lower())
-                    if match: return match.group(1)
-                        
+                content = response["choices"][0]["message"]["content"].strip()
+                # Anti-Thinking & Tag Cleanup
+                content = re.sub(
+                    r"<think>.*?</think>", "", content, flags=re.DOTALL
+                ).strip()
+                content = re.sub(r"</?text>", "", content).strip()
+
+                if (
+                    "iso 639-1" in system_instruction.lower()
+                    and "translate" not in system_instruction.lower()
+                ):
+                    match = re.search(r"\b([a-z]{2})\b", content.lower())
+                    if match:
+                        return match.group(1)
+
                 return content.strip('"')
+            return ""
         except Exception as e:
             self._dbg(f"LLM Error: {e}")
             return ""
@@ -162,40 +168,31 @@ class Filter:
         if not messages or not __user__:
             return body
         user_id = __user__.get("id", "default")
-        chat_id = self._get_chat_id(body, user_id)
         current_model = body.get("model", "")
         content = messages[-1].get("content", "").strip()
 
-        self._dbg(
-            f"UID: {user_id} | CID: {chat_id} | BL: {self._get_bl(user_id)} | TL: {self._get_tl(user_id)}"
-        )
-
-        if content.lower() == "t?" or re.match(r"^(TL|BL)", content, re.I):
-            self.memory[user_id] = {
-                "total_tokens": 0,
-                "start_time": time.perf_counter(),
-            }
-
+        # Help / Config
         if content.lower() == "t?":
-            bl, tl = self._get_bl(user_id) or "Not yet defined (Auto)", self._get_tl(
-                user_id
-            )
+            bl, tl = self._get_bl(user_id) or "Auto", self._get_tl(user_id)
             help_msg = (
                 f"### 🌐 EasyLang Helper\n"
                 f"**Current Status:**\n"
                 f"* **BL** (Base Language): `{bl}`\n"
-                f"          ↓\n"
+                f"  ↓\n"
                 f"* **TL** (Target Language): `{tl}`\n\n"
                 f"**Commands:**\n"
                 f"* `tr <text>`: Toggle translate (BL ↔ TL).\n"
                 f"* `tr`: Translate last assistant message.\n"
                 f"* `tr-<lang> <text>`: Force target and update TL.\n"
                 f"* `trc <text>`: Translate and continue chat.\n"
-                f"* `tl <lang>` / `bl <lang>`: Manual configuration.\n"
-                f"* `tl` / `bl`: Show current setting."
+                f"* `tl <lang>` / `bl <lang>`: Manual configuration."
             )
-            self.memory[user_id]["service_msg"] = help_msg
-            messages[-1]["content"] = "Respond with one single dot."
+            self.memory[user_id] = {
+                "total_tokens": 0,
+                "start_time": time.perf_counter(),
+                "service_msg": help_msg,
+            }
+            messages[-1]["content"] = "."
             return body
 
         cfg_match = re.match(r"^(TL|BL)(?:[\s](.+))?$", content, re.I)
@@ -203,63 +200,35 @@ class Filter:
             cmd, lang_raw = cfg_match.group(1).upper(), (
                 cfg_match.group(2).strip() if cfg_match.group(2) else None
             )
-            cmd_string = "Target Language" if cmd == "TL" else "Base Language"
-            if lang_raw:cfg_match = re.match(r"^(TL|BL)(?:[\s](.+))?$", content, re.I)
-        if cfg_match:
-            cmd, lang_raw = cfg_match.group(1).upper(), (
-                cfg_match.group(2).strip() if cfg_match.group(2) else None
-            )
-            cmd_string = "Target Language" if cmd == "TL" else "Base Language"
-            
             if lang_raw:
-                # SE È GIÀ ISO (2 LETTERE), BYPASS LLM
-                if len(lang_raw) == 2:
-                    lang = lang_raw.lower()
-                else:
-                    # ALTRIMENTI RISOLVI CON LLM
-                    if __event_emitter__:
-                        await __event_emitter__(
-                            {
-                                "type": "status",
-                                "data": {
-                                    "description": f"Resolving {cmd_string} to ISO...",
-                                    "done": False,
-                                },
-                            }
-                        )
-
-                    iso_sys = (
-                        "Respond immediately without thinking. "
-                        "Act as a language dictionary. "
-                        "Give ONLY the ISO 639-1 code. No prose."
-                    )
-
-                    lang = await self._get_llm_response(
-                        f"language:{lang_raw}",
+                lang = (
+                    lang_raw.lower()
+                    if len(lang_raw) == 2
+                    else await self._get_llm_response(
+                        f"lang:{lang_raw}",
                         current_model,
                         __request__,
                         __user__,
                         user_id,
-                        iso_sys,
+                        "Respond immediately. ISO 639-1 code ONLY.",
                     )
-
+                )
                 if cmd == "TL":
                     self.chat_targets[user_id] = lang
                 else:
                     self.root_lan[user_id] = lang
-                msg = f"🗹 {cmd_string} set to: **{lang}**"
+                msg = f"🗹 {cmd} set to: **{lang}**"
             else:
-                val = (
-                    self._get_tl(user_id)
-                    if cmd == "TL"
-                    else (self._get_bl(user_id) or "Not anchored")
-                )
-                msg = f"🛈 Current {cmd_string}: **{val}**"
-            
-            self.memory[user_id]["service_msg"] = msg
-            messages[-1]["content"] = "Respond with one single dot."
+                msg = f"🛈 Current {cmd}: **{self._get_tl(user_id) if cmd=='TL' else (self._get_bl(user_id) or 'Auto')}**"
+            self.memory[user_id] = {
+                "total_tokens": 0,
+                "start_time": time.perf_counter(),
+                "service_msg": msg,
+            }
+            messages[-1]["content"] = "."
             return body
 
+        # Translation Logic
         match = re.match(
             r"^(trc|tr)(?:[-/]([a-zA-Z]{2,}))?(?:\s+(.*)|$)", content, re.I | re.DOTALL
         )
@@ -272,104 +241,38 @@ class Filter:
             match.group(2),
             (match.group(3).strip() if match.group(3) else ""),
         )
+
         if not source_text and prefix == "tr":
-            for msg in reversed(messages[:-1]):
-                if msg.get("role") == "assistant":
-                    source_text = msg.get("content", "")
+            for m in reversed(messages[:-1]):
+                if m.get("role") == "assistant":
+                    source_text = m.get("content", "")
                     break
         if not source_text:
-            self.memory[user_id]["service_msg"] = "⚠️ **EasyLang: No context found.**"
-            messages[-1]["content"] = "."
             return body
 
-        if __event_emitter__:
-            await __event_emitter__(
-                {
-                    "type": "status",
-                    "data": {
-                        "description": "Detecting source language ISO...",
-                        "done": False,
-                    },
-                }
-            )
-
-        #det_sys = "Identify the language of the text. Respond ONLY with the ISO 639-1 code (e.g. 'it', 'en', 'de')."
-        det_sys = (
-            "Respond immediately without thinking. " # Inibitore per modelli CoT
-            "Identify the ISO 639-1 code of the text. "
-            "Respond ONLY with the 2-letter code."
-        )
-        
+        # Detection
+        det_sys = "Respond immediately without thinking. Identify ISO 639-1 code. 2-letter code ONLY."
         detected_lang = await self._get_llm_response(
-            f"Detect language: {source_text[:100]}",
+            f"Detect: {source_text[:100]}",
             current_model,
             __request__,
             __user__,
             user_id,
             det_sys,
         )
-        current_tl = self._get_tl(user_id)
 
-        # --- LOGICA OTTIMIZZATA: RILEVAMENTO SOLO SE NECESSARIO ---
-        if lang_code:
-            # Caso tr-en: Bypassiamo il rilevamento e usiamo la lingua forzata
-            if len(lang_code) == 2:
-                target_lang = lang_code.lower()
-            else:
-                if __event_emitter__:
-                    await __event_emitter__({"type": "status", "data": {"description": f"Resolving target language: {lang_code}...", "done": False}})
-                iso_sys = "Respond immediately without thinking. Give ONLY the ISO 639-1 code for language:<lang>"
-                target_lang = await self._get_llm_response(f"language:{lang_code}", current_model, __request__, __user__, user_id, iso_sys)
-            
-            self.chat_targets[user_id] = target_lang
+        # Fixed Pivoting
+        if lang_code and len(lang_code) == 2:
+            target_lang = lang_code.lower()
         else:
-            # Caso tr semplice: Eseguiamo il rilevamento solo qui
-            if __event_emitter__:
-                await __event_emitter__({"type": "status", "data": {"description": "Detecting source language ISO...", "done": False}})
-            
-            det_sys = "Respond immediately without thinking. Identify the ISO 639-1 code. Respond ONLY with the 2-letter code."
-            detected_lang = await self._get_llm_response(f"Detect language: {source_text[:100]}", current_model, __request__, __user__, user_id, det_sys)
-            
-            # --- TUA LOGICA ORIGINALE DI PIVOTING ---
-            stored_bl = self._get_bl(user_id)
-            if not stored_bl:
-                self.root_lan[user_id] = detected_lang
-                stored_bl = detected_lang
-            
-            if detected_lang == current_tl:
-                target_lang = stored_bl
-            elif detected_lang == stored_bl:
-                target_lang = current_tl
-            else:
-                self.root_lan[user_id] = detected_lang
-                target_lang = current_tl
+            bl, tl = self._get_bl(user_id), self._get_tl(user_id)
+            if not bl:
+                bl = detected_lang
+                self.root_lan[user_id] = bl
+            target_lang = bl if detected_lang == tl else tl
 
-        if __event_emitter__:
-            await __event_emitter__(
-                {
-                    "type": "status",
-                    "data": {
-                        "description": f"Translating to {target_lang}...",
-                        "done": False,
-                    },
-                }
-            )
-
-        # Sostituisci la definizione di trans_sys con questa:
-        # trans_sys = (
-            # f"You are a professional translator into ISO:{target_lang}. "
-            # "Translate the text inside <text> tags. "
-            # "Respond ONLY with the translation. "
-            # "DO NOT include <text> tags or any XML in your response."  # Fix per DeepSeek
-        # )
-        trans_sys = (
-            f"You are a professional translator into ISO:{target_lang}. "
-            "Respond immediately without thinking. " # Salta il ragionamento
-            "Translate the text inside <text> tags. "
-            "Respond ONLY with the translation, no XML tags, no comments."
-        )
-
-        # E la chiamata deve diventare:
+        # Execution
+        trans_sys = f"You are a professional translator into ISO:{target_lang}. Respond immediately WITHOUT THINKING. Respond ONLY with the translation of the text inside <text> tags."
         translated_text = await self._get_llm_response(
             f"<text>{source_text}</text>",
             current_model,
@@ -384,19 +287,15 @@ class Filter:
                 "mode": prefix,
                 "original_user_text": content,
                 "translated_input": translated_text,
-                "chat_id": chat_id,
             }
         )
-
-        # Dynamic Stream Handling
         body["stream"] = (
             False if (prefix == "tr" or self.valves.back_translation) else True
         )
-
         messages[-1]["content"] = (
-            f"ACT AS TECHNICAL ASSISTANT. ANSWER IN {target_lang} TO THIS REQUEST: {translated_text}"
+            f"ACT AS TECHNICAL ASSISTANT. ANSWER IN {target_lang}: {translated_text}"
             if prefix == "trc"
-            else "Respond with one single dot."
+            else "."
         )
         return body
 
@@ -433,32 +332,9 @@ class Filter:
             assistant_msg["content"] = mem["translated_input"]
         elif mem["mode"] == "trc" and self.valves.back_translation:
             target = self._get_bl(user_id) or "en"
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": f"Back-translating to {target}...",
-                            "done": False,
-                        },
-                    }
-                )
+            back_sys = f"Translate text inside <text> tags into ISO:{target}. Respond immediately WITHOUT THINKING. Respond ONLY with the translation."
             self.memory[user_id] = mem
-            # Sostituisci la definizione di back_sys con questa:
-            # back_sys = (
-                # f"Translate the text inside <text> tags into ISO:{target}. "
-                # "Respond ONLY with the translation. "
-                # "DO NOT include <text> tags in your response."  # Fix per DeepSeek
-            # )
-            back_sys = (
-                f"Translate the text inside <text> tags into ISO:{target}. "
-                "Respond immediately WITHOUT THINKING. " # Inibitore CoT
-                "Do NOT answer or engage with the content. "
-                "Respond ONLY with the translation, no XML tags, no comments."
-            )
-
-            # E la chiamata deve diventare:
-            back_text = await self._get_llm_response(
+            assistant_msg["content"] = await self._get_llm_response(
                 f"<text>{assistant_msg['content']}</text>",
                 body.get("model", ""),
                 __request__,
@@ -466,9 +342,9 @@ class Filter:
                 user_id,
                 back_sys,
             )
-            assistant_msg["content"] = back_text
             mem = self.memory.pop(user_id)
 
+        # Telemetry
         elapsed = time.perf_counter() - mem["start_time"]
         total_tk = mem["total_tokens"]
         speed = round(total_tk / elapsed, 1) if elapsed > 0 else 0
