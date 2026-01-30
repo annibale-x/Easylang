@@ -15,42 +15,42 @@ anchoring, and real-time performance telemetry.
 
 [ MAIN FEATURES ]
 
-* Surgical Translation (tr/trc): Direct translation or interactive chat
-    continuation with automatic context recovery.
-* ISO 639-1 Dictionary: Dynamic resolution of language names (e.g., "italiano",
-    "german") into standard 2-letter codes via intermediate LLM calls.
-* Smart Language Anchoring: Dynamically detects and sets Base (BL) and
-    Target (TL) languages with internal ISO-centric fallback (default: 'en').
-* Dynamic Stream Control: Smart bypass that enables native streaming for 'trc'
-    mode while maintaining interceptor control for 'tr' and back-translation.
-* Real-Time Status Emission: Active UI feedback through event emitters tracking
-    every pipeline stage (Detection, Resolution, Translation).
-* Performance Telemetry: Precise calculation of latency (seconds),
-    token consumption, and processing speed (Tk/s).
-* Back-Translation Support: Optional verification loop to translate LLM
-    responses back to the user's native tongue (BL).
+* Surgical Translation (tr/trc): Direct translation or interactive chat 
+    continuation with advanced context recovery and ISO-pivoting logic.
+* Hybrid ISO Resolution: Instant bypass for 2-letter codes and LLM-driven 
+    dictionary resolution for full language names (e.g., "italiano" -> "it").
+* Thinking Inbibitor (Anti-CoT): System-level directives to force immediate 
+    responses, skipping reasoning phases in models like DeepSeek-R1 or o1.
+* DeepSeek & XML Sanitization: Multi-stage Regex cleaning to strip <think> 
+    blocks and residual <text> tags from the final output.
+* Smart Language Anchoring: Automated detection of Base Language (BL) on first 
+    interact, with dynamic Target Language (TL) pivoting (Default: 'en').
+* Performance Telemetry 2.0: Real-time tracking of latency, cumulative token 
+    usage across sub-calls, and processing speed (Tk/s).
+* Back-Translation Loop: Optional recursive translation of LLM responses 
+    back to the user's native tongue (BL) for verification.
 
 [ LOGICAL WORKFLOW (FULL CYCLE) ]
 
 1.  INLET STAGE (User Request Interception):
-    a. IDENTIFICATION: Extract User ID, Chat ID, and Model context.
-    b. COMMAND PARSING: Regex routing for 'tr', 'trc', 'TL/BL' or help 't?'.
-    c. ISO RESOLUTION: LLM-driven conversion of user language input to ISO 639-1.
-    d. CONTEXT RECOVERY: If 'tr' is empty, scrape the last assistant message.
-    e. DETECTION CALL: Zero-temp LLM execution to identify source ISO code.
-    f. LOGICAL PIVOTING: Dynamic swap between BL and TL based on detected input.
-    g. TRANSLATION CALL: isolated LLM call to map source text to target ISO.
-    h. STREAM OPTIMIZATION: Conditionally enable/disable streaming based on mode.
+    a. COMMAND PARSING: Regex routing for 'tr', 'trc', 'TL/BL' or help 't?'.
+    b. ISO BYPASS: Instant validation of 2-letter codes to minimize LLM latency.
+    c. CONTEXT RECOVERY: Last assistant message scraping for empty 'tr' commands.
+    d. DETECTION & ANTI-COT: Zero-temp LLM call with "Respond immediately" 
+       directives to identify source ISO code without thinking latency.
+    e. LOGICAL PIVOTING: Dynamic target selection (TL if detected != TL, else BL).
+    f. TRANSLATED INJECTION: Targeted translation call with XML wrapping and 
+       CoT-suppression system prompts.
 
 2.  LLM EXECUTION:
-    - The main model processes the injected system prompt in the target language.
+    - Main model processes the request with a language-specific system wrapper.
 
 3.  OUTLET STAGE (Response Refinement):
-    a. METRICS AGGREGATION: Collect token usage and compute processing speed.
-    b. UI POLISHING: Restore original user text in history for 'trc' mode.
-    c. BACK-TRANSLATION (Optional): Recursive LLM loop to return response in BL.
-    d. TELEMETRY OUTPUT: Emit final status event with Time, Tokens, and Speed.
-    e. CLEANUP: Clear volatile memory and release the thread.
+    - METRICS: Aggregate tokens from all sub-calls (det, trans, back-trans).
+    - SANITIZATION: Surgical removal of reasoning blocks and XML artifacts.
+    - BACK-TRANSLATION: Optional secondary loop into BL via translation valve.
+    - TELEMETRY: Final status emission (Time, Total Tokens, Tk/s).
+    - MEMORY CLEANUP: Volatile state release and ID cache update.
 
 ================================================================================
 """
