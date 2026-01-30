@@ -1,9 +1,9 @@
 """
 Title: EasyLang - Translation Assistant & Session Anchoring Filter
-Version: 0.7.5
+Version: 0.7.6
 https://github.com/annibale-x/open-webui-easylang
 Author: Hannibal
-Description: User-based persistent anchoring to ensure settings survive across different chats.
+Description: Dynamic TL anchoring via tr-lang commands and user-persistent state.
 """
 
 import re
@@ -30,7 +30,6 @@ class Filter:
     def __init__(self):
         self.valves = self.Valves()
         self.memory = {}  
-        # Changed keys from chat_id to user_id for cross-chat persistence
         self.root_lan = {}  
         self.chat_targets = {}  
         self._id_cache = {}
@@ -105,15 +104,10 @@ class Filter:
         user_id = __user__.get("id", "default")
         chat_id = self._get_chat_id(body, user_id)
         
-        # DEBUG DUMP - Checking user-based persistence
-        self._dbg(f"DUMP - ChatID: {chat_id} | UserID: {user_id}")
-        self._dbg(f"DUMP - Current BL for User: {self._get_bl(user_id)}")
-        self._dbg(f"DUMP - Current TL for User: {self._get_tl(user_id)}")
-
         content = messages[-1].get("content", "").strip()
         current_model = body.get("model", "")
 
-        # 1. SETTERS & GETTERS (TL/BL) - Now using user_id
+        # 1. SETTERS & GETTERS (TL/BL)
         cfg_match = re.match(r"^(TL|BL)(?:[\s]([a-zA-Z]+))?$", content, re.I)
         if cfg_match:
             cmd = cfg_match.group(1).upper()
@@ -173,9 +167,12 @@ class Filter:
         )
         detected_lang = det_res.strip().capitalize()
 
-        # 4. TARGET RESOLUTION - Now checking user_id anchors
+        # 4. TARGET RESOLUTION & DYNAMIC ANCHORING
         if lang_code:
             target_lang = lang_code.capitalize()
+            # DYNAMIC ANCHORING: If user explicitly used tr-lang, update the persistent TL
+            self.chat_targets[user_id] = target_lang
+            self._dbg(f"Dynamic TL anchor updated to: {target_lang}")
         else:
             if original_text and not self._get_bl(user_id):
                 self.root_lan[user_id] = detected_lang
