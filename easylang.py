@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.8.7
+Version: 0.8.8.8
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -158,8 +158,6 @@ class Filter:
                     )
                 )
 
-                self._dbg(f"DETECTION RAW: '{detected_lang}'")
-
                 if cmd == "TL":
                     self.chat_targets[user_id] = lang
                 else:
@@ -199,7 +197,12 @@ class Filter:
         if not source_text:
             return body
 
-        self.memory[user_id] = {"total_tokens": 0, "start_time": time.perf_counter()}
+        self.memory[user_id] = {
+            "total_tokens": 0,
+            "start_time": time.perf_counter(),
+            "mode": prefix,
+            "service_msg": "",
+        }
 
         # --- LOGICA UNIFICATA DI PIVOTING E SWAP ---
         bl = self.root_lan.get(user_id)
@@ -216,9 +219,11 @@ class Filter:
             det_sys,
         )
 
-        # 2. Gestione Target (Forzato con conversione sicura)
+        self._dbg(f"DETECTION RAW: '{detected_lang}'")
+
+        # --- FIX TARGET & ISO CONVERSION ---
         if lang_code:
-            # Se è più lungo di 2 caratteri, chiediamo all'LLM il codice ISO
+            # Se len != 2, chiediamo all'LLM (come da README)
             target_lang = (
                 lang_code.lower()
                 if len(lang_code) == 2
@@ -228,28 +233,19 @@ class Filter:
                     __request__,
                     __user__,
                     user_id,
-                    "Respond immediately. ISO 639-1 code ONLY.",
+                    "ISO 639-1 code ONLY.",
                 )
             )
-
-            # Se l'LLM fallisce la conversione, fallback sul TL attuale per non rompere tutto
             if not target_lang or len(target_lang) != 2:
-                target_lang = tl
+                target_lang = tl  # Fallback
 
-            # Pivot Swap: Se forzi una lingua, la sorgente attuale diventa la nuova BL
+            # Pivot Swap: se forzo, aggiorno BL e TL
             if detected_lang != target_lang:
                 self.root_lan[user_id] = detected_lang
                 self.chat_targets[user_id] = target_lang
-                self._dbg(f"Pivot Swap: BL={detected_lang}, TL={target_lang}")
         else:
-            # Toggle Logico Puro
-            if bl is None:
-                if detected_lang != tl:
-                    self.root_lan[user_id] = detected_lang
-                    bl = detected_lang
-                target_lang = tl
-            else:
-                target_lang = bl if detected_lang == tl else tl
+            # Toggle standard
+            target_lang = bl if (bl and detected_lang == tl) else tl
 
         self._dbg(f"ROUTE: {detected_lang} -> {target_lang}")
 
@@ -265,11 +261,7 @@ class Filter:
         )
 
         self.memory[user_id].update(
-            {
-                "mode": prefix,
-                "original_user_text": content,
-                "translated_input": translated_text,
-            }
+            {"original_user_text": content, "translated_input": translated_text}
         )
         if prefix == "tr":
             body["stream"] = False
@@ -301,6 +293,8 @@ class Filter:
         mem = self.memory.pop(user_id)
         assistant_msg = body["messages"][-1]
 
+        mem["total_tokens"] += body.get("usage", {}).get("total_tokens", 0)
+
         if "service_msg" in mem:
             body["messages"][-1]["content"] = mem["service_msg"]
             assistant_msg["content"] = mem["service_msg"]
@@ -314,7 +308,6 @@ class Filter:
                 )
             return body
 
-        mem["total_tokens"] += body.get("usage", {}).get("total_tokens", 0)
         if mem["mode"] == "trc" and len(body["messages"]) > 1:
             body["messages"][-2]["content"] = mem["original_user_text"]
 
