@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.11
+Version: 0.8.8
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -10,7 +10,51 @@ EasyLang is a high-performance translation middleware designed for Open WebUI.
 It acts as an intelligent interceptor that manages multi-language workflows
 between the User and the LLM, enabling seamless translation, context-aware
 anchoring, and real-time performance telemetry.
+
+================================================================================
+
+[ MAIN FEATURES ]
+
+* Surgical Translation (tr/trc): Direct translation or interactive chat 
+    continuation with advanced context recovery and ISO-pivoting logic.
+* Hybrid ISO Resolution: Instant bypass for 2-letter codes and LLM-driven 
+    dictionary resolution for full language names (e.g., "italiano" -> "it").
+* Thinking Inbibitor (Anti-CoT): System-level directives to force immediate 
+    responses, skipping reasoning phases in models like DeepSeek-R1 or o1.
+* DeepSeek & XML Sanitization: Multi-stage Regex cleaning to strip <think> 
+    blocks and residual <text> tags from the final output.
+* Smart Language Anchoring: Automated detection of Base Language (BL) on first 
+    interact, with dynamic Target Language (TL) pivoting (Default: 'en').
+* Performance Telemetry 2.0: Real-time tracking of latency, cumulative token 
+    usage across sub-calls, and processing speed (Tk/s).
+* Back-Translation Loop: Optional recursive translation of LLM responses 
+    back to the user's native tongue (BL) for verification.
+
+[ LOGICAL WORKFLOW (FULL CYCLE) ]
+
+1.  INLET STAGE (User Request Interception):
+    a. COMMAND PARSING: Regex routing for 'tr', 'trc', 'TL/BL' or help 't?'.
+    b. ISO BYPASS: Instant validation of 2-letter codes to minimize LLM latency.
+    c. CONTEXT RECOVERY: Last assistant message scraping for empty 'tr' commands.
+    d. DETECTION & ANTI-COT: Zero-temp LLM call with "Respond immediately" 
+       directives to identify source ISO code without thinking latency.
+    e. LOGICAL PIVOTING: Dynamic target selection (TL if detected != TL, else BL).
+    f. TRANSLATED INJECTION: Targeted translation call with XML wrapping and 
+       CoT-suppression system prompts.
+
+2.  LLM EXECUTION:
+    - Main model processes the request with a language-specific system wrapper.
+
+3.  OUTLET STAGE (Response Refinement):
+    - METRICS: Aggregate tokens from all sub-calls (det, trans, back-trans).
+    - SANITIZATION: Surgical removal of reasoning blocks and XML artifacts.
+    - BACK-TRANSLATION: Optional secondary loop into BL via translation valve.
+    - TELEMETRY: Final status emission (Time, Total Tokens, Tk/s).
+    - MEMORY CLEANUP: Volatile state release and ID cache update.
+
+================================================================================
 """
+
 
 import re
 import sys
@@ -22,49 +66,37 @@ from open_webui.main import generate_chat_completion
 
 class Filter:
     class Valves(BaseModel):
-        # Configuration for the LLM used specifically for middleware tasks
         translation_model: str = Field(
             default="", description="Model for translation. Empty = current."
         )
-        # Toggle for back-translation feature in 'trc' mode
         back_translation: bool = Field(
             default=False, description="Translate assistant response back."
         )
-        # Debugging flag for stderr logging
         debug: bool = Field(
             default=True, description="Enable detailed state dumps in logs."
         )
 
     def __init__(self):
         self.valves = self.Valves()
-        # memory: Stores telemetry and state during the inlet/outlet lifecycle
-        # root_lan: Stores detected Base Language (BL) per user
-        # chat_targets: Stores current Target Language (TL) per user
-        # _id_cache: Temporary storage for chat sessions identification
         self.memory, self.root_lan, self.chat_targets, self._id_cache = {}, {}, {}, {}
 
     def _dbg(self, message: str):
-        """Standardized debug logger for internal state tracking."""
         if self.valves.debug:
             print(f"⚡ EASYLANG: {message}", file=sys.stderr, flush=True)
 
     def _get_chat_id(self, body: dict, user_id: str) -> str:
-        """Extracts unique chat identifier for session persistence."""
         cid = body.get("metadata", {}).get("chat_id") or body.get("chat_id")
         if cid:
             self._id_cache[user_id] = cid
         return self._id_cache.get(user_id, "unknown")
 
     def _get_bl(self, user_id: str) -> Optional[str]:
-        """Retrieves the established Base Language (Native) for the user."""
         return self.root_lan.get(user_id)
 
     def _get_tl(self, user_id: str) -> str:
-        """Retrieves current Target Language (Default to 'en' if not set)."""
         return self.chat_targets.get(user_id, "en")
 
     class UserWrapper:
-        """Internal adapter to satisfy Open WebUI's user object expectations."""
         def __init__(self, user_dict):
             self.role, self.id = "user", "user_id"
             if user_dict and isinstance(user_dict, dict):
@@ -80,10 +112,6 @@ class Filter:
         user_id: str,
         system_instruction: str = "",
     ) -> str:
-        """
-        Executes internal LLM calls for detection, ISO resolution, or translation.
-        Includes automated token tracking and response sanitization.
-        """
         selected_model = (
             self.valves.translation_model if self.valves.translation_model else model_id
         )
@@ -95,29 +123,26 @@ class Filter:
         payload = {
             "model": selected_model,
             "messages": messages,
-            "stream": False, # Sync execution for middleware logic
-            "temperature": 0, # Strict deterministic output
+            "stream": False,
+            "temperature": 0,
         }
         try:
             response = await generate_chat_completion(
                 __request__, payload, user=self.UserWrapper(__user__)
             )
             if response:
-                # Accumulate tokens consumed by middleware operations
                 if user_id in self.memory:
                     self.memory[user_id]["total_tokens"] += response.get(
                         "usage", {}
                     ).get("total_tokens", 0)
 
                 content = response["choices"][0]["message"]["content"].strip()
-                
-                # Cleanup: removes Chain of Thought (thinking) and helper XML tags
+                # Anti-Thinking & Tag Cleanup
                 content = re.sub(
                     r"<think>.*?</think>", "", content, flags=re.DOTALL
                 ).strip()
                 content = re.sub(r"</?text>", "", content).strip()
 
-                # ISO Logic: ensure only a 2-letter code is returned if in detection mode
                 if (
                     "iso 639-1" in system_instruction.lower()
                     and "translate" not in system_instruction.lower()
@@ -139,13 +164,6 @@ class Filter:
         __request__=None,
         __event_emitter__=None,
     ) -> dict:
-        """
-        Pre-processing pipeline:
-        1. Command parsing (tr/trc/t?)
-        2. ISO language resolution and anchoring
-        3. Translation task generation
-        4. Stream control modification
-        """
         messages = body.get("messages", [])
         if not messages or not __user__:
             return body
@@ -153,7 +171,7 @@ class Filter:
         current_model = body.get("model", "")
         content = messages[-1].get("content", "").strip()
 
-        # [HELPER INTERFACE]
+        # Help / Config
         if content.lower() == "t?":
             bl, tl = self._get_bl(user_id) or "Auto", self._get_tl(user_id)
             help_msg = (
@@ -174,17 +192,49 @@ class Filter:
                 "start_time": time.perf_counter(),
                 "service_msg": help_msg,
             }
-            messages[-1]["content"] = "." # Placeholder to avoid UI error
+            messages[-1]["content"] = "."
             return body
 
-        # [COMMAND PARSING]
-        # Regex (v0.8.11): Handles prefix, optional ISO separator, and content
-        # Strictly avoids collisions with natural text (e.g., "tr It works!")
-        match = re.match(r"^(trc|tr)(?:([- /])([a-zA-Z]{2,}))?(?:\s+(.*))?$", content, re.I | re.S)
+        cfg_match = re.match(r"^(TL|BL)(?:[\s](.+))?$", content, re.I)
+        if cfg_match:
+            cmd, lang_raw = cfg_match.group(1).upper(), (
+                cfg_match.group(2).strip() if cfg_match.group(2) else None
+            )
+            if lang_raw:
+                lang = (
+                    lang_raw.lower()
+                    if len(lang_raw) == 2
+                    else await self._get_llm_response(
+                        f"lang:{lang_raw}",
+                        current_model,
+                        __request__,
+                        __user__,
+                        user_id,
+                        "Respond immediately. ISO 639-1 code ONLY.",
+                    )
+                )
+                if cmd == "TL":
+                    self.chat_targets[user_id] = lang
+                else:
+                    self.root_lan[user_id] = lang
+                msg = f"🗹 {cmd} set to: **{lang}**"
+            else:
+                msg = f"🛈 Current {cmd}: **{self._get_tl(user_id) if cmd=='TL' else (self._get_bl(user_id) or 'Auto')}**"
+            self.memory[user_id] = {
+                "total_tokens": 0,
+                "start_time": time.perf_counter(),
+                "service_msg": msg,
+            }
+            messages[-1]["content"] = "."
+            return body
+
+        # Translation Logic
+        match = re.match(
+            r"^(trc|tr)(?:[-/]([a-zA-Z]{2,}))?(?:\s+(.*)|$)", content, re.I | re.DOTALL
+        )
         if not match:
             return body
 
-        # Initialize telemetry and session memory
         self.memory[user_id] = {"total_tokens": 0, "start_time": time.perf_counter()}
         prefix, lang_code, source_text = (
             match.group(1).lower(),
@@ -192,53 +242,37 @@ class Filter:
             (match.group(3).strip() if match.group(3) else ""),
         )
 
-        # [CONTEXT RECOVERY]
-        # Automatically pulls last Assistant content if command is issued without text
         if not source_text and prefix == "tr":
             for m in reversed(messages[:-1]):
                 if m.get("role") == "assistant":
                     source_text = m.get("content", "")
                     break
-
         if not source_text:
-            self.memory[user_id][
-                "service_msg"
-            ] = "⚠️ **EasyLang: No context found to translate.**"
-            messages[-1]["content"] = "."
             return body
 
-        # [TARGET LANGUAGE RESOLUTION]
-        if lang_code and len(lang_code) == 2:
-            # ISO Bypass: User explicitly defined the language (tr-en)
-            target_lang = lang_code.lower()
-            self.chat_targets[user_id] = target_lang
-        else:
-            # Auto-detection: Invoke LLM to identify source language
-            det_sys = "Respond immediately without thinking. Identify ISO 639-1 code. 2-letter code ONLY."
-            detected_lang = await self._get_llm_response(
-                f"Detect: {source_text[:100]}",
-                current_model,
-                __request__,
-                __user__,
-                user_id,
-                det_sys,
-            )
+        # Detection
+        det_sys = "Respond immediately without thinking. Identify ISO 639-1 code. 2-letter code ONLY."
+        detected_lang = await self._get_llm_response(
+            f"Detect: {source_text[:100]}",
+            current_model,
+            __request__,
+            __user__,
+            user_id,
+            det_sys,
+        )
 
-            # Anchoring: Determine if we translate to TL or back to BL
+        # Fixed Pivoting
+        if lang_code and len(lang_code) == 2:
+            target_lang = lang_code.lower()
+        else:
             bl, tl = self._get_bl(user_id), self._get_tl(user_id)
             if not bl:
                 bl = detected_lang
                 self.root_lan[user_id] = bl
             target_lang = bl if detected_lang == tl else tl
 
-        # [TRANSLATION EXECUTION]
-        # Instruction Hardening: Force model to behave as a sterile API
-        trans_sys = (
-            f"You are a sterile translation engine for ISO:{target_lang}. "
-            "DO NOT engage in conversation. DO NOT answer greetings. "
-            "Respond ONLY with the direct translation of the text found inside <text> tags. "
-            "Zero talk, just output the exact translation."
-        )
+        # Execution
+        trans_sys = f"You are a professional translator into ISO:{target_lang}. Respond immediately WITHOUT THINKING. Respond ONLY with the translation of the text inside <text> tags."
         translated_text = await self._get_llm_response(
             f"<text>{source_text}</text>",
             current_model,
@@ -248,7 +282,6 @@ class Filter:
             trans_sys,
         )
 
-        # Save session data for the outlet phase
         self.memory[user_id].update(
             {
                 "mode": prefix,
@@ -256,13 +289,9 @@ class Filter:
                 "translated_input": translated_text,
             }
         )
-        
-        # Stream Control: Disable for surgical 'tr' or back-translation loops
         body["stream"] = (
             False if (prefix == "tr" or self.valves.back_translation) else True
         )
-        
-        # Modify final message: 'trc' continues conversation, 'tr' halts for injection
         messages[-1]["content"] = (
             f"ACT AS TECHNICAL ASSISTANT. ANSWER IN {target_lang}: {translated_text}"
             if prefix == "trc"
@@ -277,21 +306,12 @@ class Filter:
         __request__=None,
         __event_emitter__=None,
     ) -> dict:
-        """
-        Post-processing pipeline:
-        1. Injects service messages (help/errors)
-        2. Injects direct translations (tr)
-        3. Restores original user UI context
-        4. Handles back-translation and final telemetry emission
-        """
         user_id = (__user__ or {}).get("id", "default")
         if user_id not in self.memory:
             return body
-            
         mem = self.memory.pop(user_id)
         assistant_msg = body["messages"][-1]
 
-        # [SERVICE MESSAGE INJECTION]
         if "service_msg" in mem:
             assistant_msg["content"] = mem["service_msg"]
             elapsed = time.perf_counter() - mem["start_time"]
@@ -304,19 +324,13 @@ class Filter:
                 )
             return body
 
-        # Aggregate total tokens from LLM completion
         mem["total_tokens"] += body.get("usage", {}).get("total_tokens", 0)
-        
-        # UI Context Restoration: Replaces the 'trc ...' command with original user text in UI history
         if mem["mode"] == "trc" and len(body["messages"]) > 1:
             body["messages"][-2]["content"] = mem["original_user_text"]
 
-        # [TRANSLATION INJECTION]
         if mem["mode"] == "tr":
-            # Direct surgical injection of translated text
             assistant_msg["content"] = mem["translated_input"]
         elif mem["mode"] == "trc" and self.valves.back_translation:
-            # Back-Translation loop: Translates AI response back to user's native tongue
             target = self._get_bl(user_id) or "en"
             back_sys = f"Translate text inside <text> tags into ISO:{target}. Respond immediately WITHOUT THINKING. Respond ONLY with the translation."
             self.memory[user_id] = mem
@@ -330,8 +344,7 @@ class Filter:
             )
             mem = self.memory.pop(user_id)
 
-        # [TELEMETRY EMISSION]
-        # Calculates latency and processing speed for the status bar
+        # Telemetry
         elapsed = time.perf_counter() - mem["start_time"]
         total_tk = mem["total_tokens"]
         speed = round(total_tk / elapsed, 1) if elapsed > 0 else 0
