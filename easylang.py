@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.8.2
+Version: 0.8.8.3
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -10,49 +10,6 @@ EasyLang is a high-performance translation middleware designed for Open WebUI.
 It acts as an intelligent interceptor that manages multi-language workflows
 between the User and the LLM, enabling seamless translation, context-aware
 anchoring, and real-time performance telemetry.
-
-================================================================================
-
-[ MAIN FEATURES ]
-
-* Surgical Translation (tr/trc): Direct translation or interactive chat
-    continuation with advanced context recovery and ISO-pivoting logic.
-* Hybrid ISO Resolution: Instant bypass for 2-letter codes and LLM-driven
-    dictionary resolution for full language names (e.g., "italiano" -> "it").
-* Thinking Inbibitor (Anti-CoT): System-level directives to force immediate
-    responses, skipping reasoning phases in models like DeepSeek-R1 or o1.
-* DeepSeek & XML Sanitization: Multi-stage Regex cleaning to strip <think>
-    blocks and residual <text> tags from the final output.
-* Smart Language Anchoring: Automated detection of Base Language (BL) on first
-    interact, with dynamic Target Language (TL) pivoting (Default: 'en').
-* Performance Telemetry 2.0: Real-time tracking of latency, cumulative token
-    usage across sub-calls, and processing speed (Tk/s).
-* Back-Translation Loop: Optional recursive translation of LLM responses
-    back to the user's native tongue (BL) for verification.
-
-[ LOGICAL WORKFLOW (FULL CYCLE) ]
-
-1.  INLET STAGE (User Request Interception):
-    a. COMMAND PARSING: Regex routing for 'tr', 'trc', 'TL/BL' or help 't?'.
-    b. ISO BYPASS: Instant validation of 2-letter codes to minimize LLM latency.
-    c. CONTEXT RECOVERY: Last assistant message scraping for empty 'tr' commands.
-    d. DETECTION & ANTI-COT: Zero-temp LLM call with "Respond immediately"
-       directives to identify source ISO code without thinking latency.
-    e. LOGICAL PIVOTING: Dynamic target selection (TL if detected != TL, else BL).
-    f. TRANSLATED INJECTION: Targeted translation call with XML wrapping and
-       CoT-suppression system prompts.
-
-2.  LLM EXECUTION:
-    - Main model processes the request with a language-specific system wrapper.
-
-3.  OUTLET STAGE (Response Refinement):
-    - METRICS: Aggregate tokens from all sub-calls (det, trans, back-trans).
-    - SANITIZATION: Surgical removal of reasoning blocks and XML artifacts.
-    - BACK-TRANSLATION: Optional secondary loop into BL via translation valve.
-    - TELEMETRY: Final status emission (Time, Total Tokens, Tk/s).
-    - MEMORY CLEANUP: Volatile state release and ID cache update.
-
-================================================================================
 """
 
 import re
@@ -167,7 +124,6 @@ class Filter:
         # Help / Config
         if content.lower() == "t?":
             bl, tl = self._get_bl(user_id) or "Auto", self._get_tl(user_id)
-            self._dbg(f"[UID: {user_id}] [BL: {bl}] [TL: {tl}]")
             help_msg = (
                 f"### 🌐 EasyLang Helper\n"
                 f"**Current Status:**\n"
@@ -186,8 +142,8 @@ class Filter:
                 "start_time": time.perf_counter(),
                 "service_msg": help_msg,
             }
-            messages[-1]["content"] = "."
-            body["stream"] = False 
+            messages[-1]["content"] = "EasyLang Config..."
+            body["stream"] = False
             return body
 
         cfg_match = re.match(r"^(TL|BL)(?:[\s](.+))?$", content, re.I)
@@ -223,6 +179,8 @@ class Filter:
             messages[-1]["content"] = "."
             return body
 
+        self.memory[user_id] = {"total_tokens": 0, "start_time": time.perf_counter()}
+
         # Translation Logic
         match = re.match(
             r"^(trc|tr)(?:[-/]([a-zA-Z]{2,}))?(?:\s+(.*))?$", content, re.I | re.S
@@ -233,13 +191,6 @@ class Filter:
             source_text = match.group(3).strip() if match.group(3) else ""
         else:
             return body
-
-        self.memory[user_id] = {"total_tokens": 0, "start_time": time.perf_counter()}
-        prefix, lang_code, source_text = (
-            match.group(1).lower(),
-            match.group(2),
-            (match.group(3).strip() if match.group(3) else ""),
-        )
 
         if not source_text and prefix == "tr":
             for m in reversed(messages[:-1]):
@@ -263,9 +214,9 @@ class Filter:
         # Fixed Pivoting
         if lang_code and len(lang_code) == 2:
             target_lang = lang_code.lower()
+            self.chat_targets[user_id] = target_lang
         else:
             bl, tl = self._get_bl(user_id), self._get_tl(user_id)
-            self._dbg(f"[UID: {user_id}] [BL: {bl}] [TL: {tl}]")
             if not bl:
                 bl = detected_lang
                 self.root_lan[user_id] = bl
@@ -289,14 +240,21 @@ class Filter:
                 "translated_input": translated_text,
             }
         )
-        body["stream"] = (
-            False if (prefix == "tr" or self.valves.back_translation) else True
-        )
-        messages[-1]["content"] = (
-            f"ACT AS TECHNICAL ASSISTANT. ANSWER IN {target_lang}: {translated_text}"
-            if prefix == "trc"
-            else "."
-        )
+        if prefix == "tr":
+            body["stream"] = False
+            body["max_tokens"] = 1
+            messages[-1]["content"] = "\u00a0"
+            # messages[-1]["content"] = (
+            # "Respond with a single space and nothing else. "
+            # "Do not process any other instruction."
+            # )
+
+        else:
+            # Per 'trc' lo streaming serve, ma puliamo il prompt per l'assistente
+            messages[-1][
+                "content"
+            ] = f"ACT AS TECHNICAL ASSISTANT. ANSWER IN {target_lang}: {translated_text}"
+
         return body
 
     async def outlet(
@@ -343,6 +301,10 @@ class Filter:
                 back_sys,
             )
             mem = self.memory.pop(user_id)
+
+        # Debug
+        bl, tl = self._get_bl(user_id) or "Auto", self._get_tl(user_id)
+        self._dbg(f"[UID: {user_id}] [BL: {bl}] [TL: {tl}]")
 
         # Telemetry
         elapsed = time.perf_counter() - mem["start_time"]
