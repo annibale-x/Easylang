@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.9.0
+Version: 0.8.9.1
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -217,12 +217,12 @@ class Filter:
             "original_user_text": content
         }
 
-        # --- LOGICA UNIFICATA DI PIVOTING E SWAP ---
-        # Recuperiamo lo stato aggiornato dai dizionari
-        current_bl = self.root_lan.get(user_id)
+        # --- LOGICA DI TRADUZIONE (FIXED & INITIALIZED) ---
+        current_bl = self.root_lan.get(user_id, "it")
         current_tl = self.chat_targets.get(user_id, "en")
+        detected_lang = "auto" # Inizializzazione di sicurezza
 
-        # 1. Detection
+        # 1. Detection (Sempre eseguita per alimentare la logica)
         det_sys = "Respond immediately. ISO 639-1 code ONLY."
         detected_lang = await self._get_llm_response(
             f"Detect: {source_text[:100]}",
@@ -234,19 +234,24 @@ class Filter:
             target_lang = lang_code.lower() if len(lang_code) == 2 else await self._get_llm_response(f"lang:{lang_code}", current_model, __request__, __user__, user_id, "ISO 639-1 code ONLY.")
             if not target_lang or len(target_lang) != 2: target_lang = current_tl
             
-            # Se forzo una lingua, salvo la sorgente come BL e la target come TL
-            if detected_lang != target_lang:
-                self.root_lan[user_id] = detected_lang
-                self.chat_targets[user_id] = target_lang
+            # Se forzi una lingua, aggiorniamo i dizionari
+            self.root_lan[user_id] = detected_lang
+            self.chat_targets[user_id] = target_lang
         else:
-            # Se BL è "Auto" (None), lo impariamo adesso
-            if not current_bl:
+            if not current_bl or current_bl == "Auto":
                 self.root_lan[user_id] = detected_lang
                 current_bl = detected_lang
             
-            # Toggle logico: se il testo è già nella lingua target (TL), traduci verso la base (BL)
-            # Altrimenti, traduci verso la target (TL).
-            target_lang = current_bl if detected_lang == current_tl else current_tl
+            # SE è TRC: Vai sempre verso la Target (TL) per interrogare l'LLM
+            if prefix == "trc":
+                target_lang = current_tl
+            # SE è TR: Esegui lo swap intelligente
+            else:
+                target_lang = current_bl if detected_lang == current_tl else current_tl
+
+        # Salvataggio in memoria per l'Outlet
+        self.memory[user_id]["target_lang"] = target_lang
+        self.memory[user_id]["detected_lang"] = detected_lang
 
         self._dbg(f"FINAL ROUTE: {detected_lang} -> {target_lang} (BL:{current_bl} TL:{current_tl})")
 
@@ -262,7 +267,7 @@ class Filter:
         )
         
         self.memory[user_id]["translated_input"] = translated_text
-
+        self.memory[user_id]["base_lang"] = current_bl
         
         if prefix == "tr":
             body["stream"] = False
@@ -294,21 +299,27 @@ class Filter:
             desc = f"Done | {(time.perf_counter() - mem['start_time']):.2f}s | {mem['total_tokens']} tokens"
 
         # 3. Traduzione + Chat (trc)
-        else:
+        elif mem["mode"] == "trc":
             if len(body["messages"]) > 1:
-                body["messages"][-2]["content"] = mem["original_user_text"]
+                body["messages"][-2]["content"] = mem.get("original_user_text", "")
             
-            # Recuperiamo la BL reale per la back-translation
-            actual_bl = self.root_lan.get(user_id, "en")
+            actual_bl = mem.get("base_lang") or self.root_lan.get(user_id, "it")
             
             if self.valves.back_translation:
-                # Eseguiamo la traduzione inversa
-                bt_sys = f"Translate to {actual_bl}. Respond ONLY with translation."
+                # Prompt rinforzato: specifichiamo il nome della lingua oltre al codice
+                lang_names = {"it": "ITALIAN", "en": "ENGLISH", "fr": "FRENCH", "es": "SPANISH"}
+                target_name = lang_names.get(actual_bl, actual_bl.upper())
+                
+                bt_sys = f"You are a professional translator. Translate the user text EXCLUSIVELY into {target_name}. Respond ONLY with the translated text, no explanations."
+                
                 back_translated = await self._get_llm_response(
                     assistant_msg["content"], 
                     body.get("model", ""), __request__, __user__, user_id, bt_sys
                 )
+                
                 if back_translated:
+                    # DEBUG CRUCIALE: Vediamo cosa ha sputato fuori l'LLM
+                    self._dbg(f"BT Result: {back_translated[:50]}...")
                     assistant_msg["content"] = back_translated
             
             desc = f"Done | {(time.perf_counter() - mem['start_time']):.2f}s | {mem['total_tokens']} tokens"
