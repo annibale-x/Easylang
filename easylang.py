@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.8.3
+Version: 0.8.8.4
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -176,7 +176,8 @@ class Filter:
                 "start_time": time.perf_counter(),
                 "service_msg": msg,
             }
-            messages[-1]["content"] = "."
+            messages[-1]["content"] = "\u00a0"
+            body["stream"] = False
             return body
 
         self.memory[user_id] = {"total_tokens": 0, "start_time": time.perf_counter()}
