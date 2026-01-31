@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.8.5
+Version: 0.8.8.6
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -206,11 +206,11 @@ class Filter:
 
         self.memory[user_id] = {"total_tokens": 0, "start_time": time.perf_counter()}
 
-        # --- LOGICA UNIFICATA DI PIVOTING E SWAP ---
+        # --- LOGICA DI PIVOTING E SWAP DINAMICO ---
         bl = self.root_lan.get(user_id)
         tl = self._get_tl(user_id)
 
-        # 1. Detection (Unica fonte di verità)
+        # 1. Detection (Unica chiamata LLM per il routing)
         det_sys = "Respond immediately. ISO 639-1 code ONLY."
         detected_lang = await self._get_llm_response(
             f"Detect: {source_text[:100]}",
@@ -221,27 +221,24 @@ class Filter:
             det_sys,
         )
 
-        # 2. Gestione Target (Forzato o Toggle)
+        # 2. Routing & Swap
         if lang_code and len(lang_code) == 2:
             target_lang = lang_code.lower()
-            # Pivot Swap: Se forzi una lingua, la sorgente attuale diventa la nuova BL
+            # Se forzi una lingua diversa dalla rilevata, la rilevata diventa la nuova Base
             if detected_lang != target_lang:
                 self.root_lan[user_id] = detected_lang
                 self.chat_targets[user_id] = target_lang
                 self._dbg(f"Pivot Swap: BL={detected_lang}, TL={target_lang}")
         else:
-            # Se non c'è BL (caso vergine), la inizializziamo ora
+            # Se BL è None, siamo in cold start
             if bl is None:
                 if detected_lang != tl:
                     self.root_lan[user_id] = detected_lang
-                    bl = detected_lang  # Aggiorniamo la variabile locale per il toggle sotto
-                    self._dbg(f"Initial Anchor: BL={bl}")
-                else:
-                    self._dbg("Anchoring Deferred: Input matches Default TL")
-
-            # Toggle Logico Puro: se rilevo TL vado a BL, altrimenti vado a TL
-            # Se BL è ancora None (caso en->en), target_lang resterà tl (en)
-            target_lang = bl if (detected_lang == tl and bl) else tl
+                    bl = detected_lang
+                target_lang = tl
+            else:
+                # Toggle dinamico standard
+                target_lang = bl if detected_lang == tl else tl
 
         self._dbg(f"ROUTE: {detected_lang} -> {target_lang}")
 
@@ -324,10 +321,6 @@ class Filter:
                 back_sys,
             )
             mem = self.memory.pop(user_id)
-
-        # Debug
-        bl, tl = self._get_bl(user_id) or "Auto", self._get_tl(user_id)
-        self._dbg(f"BL:{bl} | TL: {tl}")
 
         # Telemetry
         elapsed = time.perf_counter() - mem["start_time"]
