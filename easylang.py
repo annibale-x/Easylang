@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.8
+Version: 0.8.8.1
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -15,19 +15,19 @@ anchoring, and real-time performance telemetry.
 
 [ MAIN FEATURES ]
 
-* Surgical Translation (tr/trc): Direct translation or interactive chat 
+* Surgical Translation (tr/trc): Direct translation or interactive chat
     continuation with advanced context recovery and ISO-pivoting logic.
-* Hybrid ISO Resolution: Instant bypass for 2-letter codes and LLM-driven 
+* Hybrid ISO Resolution: Instant bypass for 2-letter codes and LLM-driven
     dictionary resolution for full language names (e.g., "italiano" -> "it").
-* Thinking Inbibitor (Anti-CoT): System-level directives to force immediate 
+* Thinking Inbibitor (Anti-CoT): System-level directives to force immediate
     responses, skipping reasoning phases in models like DeepSeek-R1 or o1.
-* DeepSeek & XML Sanitization: Multi-stage Regex cleaning to strip <think> 
+* DeepSeek & XML Sanitization: Multi-stage Regex cleaning to strip <think>
     blocks and residual <text> tags from the final output.
-* Smart Language Anchoring: Automated detection of Base Language (BL) on first 
+* Smart Language Anchoring: Automated detection of Base Language (BL) on first
     interact, with dynamic Target Language (TL) pivoting (Default: 'en').
-* Performance Telemetry 2.0: Real-time tracking of latency, cumulative token 
+* Performance Telemetry 2.0: Real-time tracking of latency, cumulative token
     usage across sub-calls, and processing speed (Tk/s).
-* Back-Translation Loop: Optional recursive translation of LLM responses 
+* Back-Translation Loop: Optional recursive translation of LLM responses
     back to the user's native tongue (BL) for verification.
 
 [ LOGICAL WORKFLOW (FULL CYCLE) ]
@@ -36,10 +36,10 @@ anchoring, and real-time performance telemetry.
     a. COMMAND PARSING: Regex routing for 'tr', 'trc', 'TL/BL' or help 't?'.
     b. ISO BYPASS: Instant validation of 2-letter codes to minimize LLM latency.
     c. CONTEXT RECOVERY: Last assistant message scraping for empty 'tr' commands.
-    d. DETECTION & ANTI-COT: Zero-temp LLM call with "Respond immediately" 
+    d. DETECTION & ANTI-COT: Zero-temp LLM call with "Respond immediately"
        directives to identify source ISO code without thinking latency.
     e. LOGICAL PIVOTING: Dynamic target selection (TL if detected != TL, else BL).
-    f. TRANSLATED INJECTION: Targeted translation call with XML wrapping and 
+    f. TRANSLATED INJECTION: Targeted translation call with XML wrapping and
        CoT-suppression system prompts.
 
 2.  LLM EXECUTION:
@@ -54,7 +54,6 @@ anchoring, and real-time performance telemetry.
 
 ================================================================================
 """
-
 
 import re
 import sys
@@ -83,12 +82,6 @@ class Filter:
     def _dbg(self, message: str):
         if self.valves.debug:
             print(f"⚡ EASYLANG: {message}", file=sys.stderr, flush=True)
-
-    def _get_chat_id(self, body: dict, user_id: str) -> str:
-        cid = body.get("metadata", {}).get("chat_id") or body.get("chat_id")
-        if cid:
-            self._id_cache[user_id] = cid
-        return self._id_cache.get(user_id, "unknown")
 
     def _get_bl(self, user_id: str) -> Optional[str]:
         return self.root_lan.get(user_id)
@@ -174,6 +167,7 @@ class Filter:
         # Help / Config
         if content.lower() == "t?":
             bl, tl = self._get_bl(user_id) or "Auto", self._get_tl(user_id)
+            self._dbg(f"[UID: {user_id}] [BL: {bl}] [TL: {tl}]")
             help_msg = (
                 f"### 🌐 EasyLang Helper\n"
                 f"**Current Status:**\n"
@@ -193,6 +187,7 @@ class Filter:
                 "service_msg": help_msg,
             }
             messages[-1]["content"] = "."
+            body["stream"] = False 
             return body
 
         cfg_match = re.match(r"^(TL|BL)(?:[\s](.+))?$", content, re.I)
@@ -230,9 +225,13 @@ class Filter:
 
         # Translation Logic
         match = re.match(
-            r"^(trc|tr)(?:[-/]([a-zA-Z]{2,}))?(?:\s+(.*)|$)", content, re.I | re.DOTALL
+            r"^(trc|tr)(?:[-/]([a-zA-Z]{2,}))?(?:\s+(.*))?$", content, re.I | re.S
         )
-        if not match:
+        if match:
+            prefix = match.group(1).lower()
+            lang_code = match.group(2)  # Sarà None se non c'è - o /
+            source_text = match.group(3).strip() if match.group(3) else ""
+        else:
             return body
 
         self.memory[user_id] = {"total_tokens": 0, "start_time": time.perf_counter()}
@@ -266,6 +265,7 @@ class Filter:
             target_lang = lang_code.lower()
         else:
             bl, tl = self._get_bl(user_id), self._get_tl(user_id)
+            self._dbg(f"[UID: {user_id}] [BL: {bl}] [TL: {tl}]")
             if not bl:
                 bl = detected_lang
                 self.root_lan[user_id] = bl
