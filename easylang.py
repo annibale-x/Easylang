@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.8.6
+Version: 0.8.8.7
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -121,10 +121,11 @@ class Filter:
         current_model = body.get("model", "")
         content = messages[-1].get("content", "").strip()
         bl, tl = self._get_bl(user_id) or "Auto", self._get_tl(user_id)
+        service_msg = ""
 
         # Help / Config
         if content.lower() == "t?":
-            help_msg = (
+            service_msg = (
                 f"### 🌐 EasyLang Helper\n"
                 f"**Current Status:**\n"
                 f"* **BL** (Base Language): `{bl}`\n"
@@ -137,14 +138,6 @@ class Filter:
                 f"* `trc <text>`: Translate and continue chat.\n"
                 f"* `tl <lang>` / `bl <lang>`: Manual configuration."
             )
-            self.memory[user_id] = {
-                "total_tokens": 0,
-                "start_time": time.perf_counter(),
-                "service_msg": help_msg,
-            }
-            messages[-1]["content"] = "EasyLang Config..."
-            body["stream"] = False
-            return body
 
         cfg_match = re.match(r"^(TL|BL)(?:[\s](.+))?$", content, re.I)
         if cfg_match:
@@ -171,18 +164,20 @@ class Filter:
                     self.chat_targets[user_id] = lang
                 else:
                     self.root_lan[user_id] = lang
-                msg = f"🗹 {cmd} set to: **{lang}**"
+                service_msg = f"🗹 {cmd} set to: **{lang}**"
             else:
-                msg = f"🛈 Current {cmd}: **{self._get_tl(user_id) if cmd=='TL' else (self._get_bl(user_id) or 'Auto')}**"
-            self.memory[user_id] = {
-                "total_tokens": 0,
-                "start_time": time.perf_counter(),
-                "service_msg": msg,
-            }
-            messages[-1]["content"] = "\u00a0"
-            body["stream"] = False
+                service_msg = f"🛈 Current {cmd}: **{self._get_tl(user_id) if cmd=='TL' else (self._get_bl(user_id) or 'Auto')}**"
 
-            self._dbg(f"BL:{bl} | TL: {tl}")
+        # Deliver service message
+        if service_msg:
+            self.memory[user_id] = {
+                "service_msg": service_msg,
+                "start_time": time.perf_counter(),
+                "total_tokens": 0,
+                "mode": "service",
+            }
+            messages[-1]["content"] = "EasyLang System Update"  # Testo dummy
+            body["max_tokens"] = 1
             return body
 
         # Translation Logic
@@ -206,11 +201,11 @@ class Filter:
 
         self.memory[user_id] = {"total_tokens": 0, "start_time": time.perf_counter()}
 
-        # --- LOGICA DI PIVOTING E SWAP DINAMICO ---
+        # --- LOGICA UNIFICATA DI PIVOTING E SWAP ---
         bl = self.root_lan.get(user_id)
         tl = self._get_tl(user_id)
 
-        # 1. Detection (Unica chiamata LLM per il routing)
+        # 1. Detection
         det_sys = "Respond immediately. ISO 639-1 code ONLY."
         detected_lang = await self._get_llm_response(
             f"Detect: {source_text[:100]}",
@@ -221,23 +216,39 @@ class Filter:
             det_sys,
         )
 
-        # 2. Routing & Swap
-        if lang_code and len(lang_code) == 2:
-            target_lang = lang_code.lower()
-            # Se forzi una lingua diversa dalla rilevata, la rilevata diventa la nuova Base
+        # 2. Gestione Target (Forzato con conversione sicura)
+        if lang_code:
+            # Se è più lungo di 2 caratteri, chiediamo all'LLM il codice ISO
+            target_lang = (
+                lang_code.lower()
+                if len(lang_code) == 2
+                else await self._get_llm_response(
+                    f"lang:{lang_code}",
+                    current_model,
+                    __request__,
+                    __user__,
+                    user_id,
+                    "Respond immediately. ISO 639-1 code ONLY.",
+                )
+            )
+
+            # Se l'LLM fallisce la conversione, fallback sul TL attuale per non rompere tutto
+            if not target_lang or len(target_lang) != 2:
+                target_lang = tl
+
+            # Pivot Swap: Se forzi una lingua, la sorgente attuale diventa la nuova BL
             if detected_lang != target_lang:
                 self.root_lan[user_id] = detected_lang
                 self.chat_targets[user_id] = target_lang
                 self._dbg(f"Pivot Swap: BL={detected_lang}, TL={target_lang}")
         else:
-            # Se BL è None, siamo in cold start
+            # Toggle Logico Puro
             if bl is None:
                 if detected_lang != tl:
                     self.root_lan[user_id] = detected_lang
                     bl = detected_lang
                 target_lang = tl
             else:
-                # Toggle dinamico standard
                 target_lang = bl if detected_lang == tl else tl
 
         self._dbg(f"ROUTE: {detected_lang} -> {target_lang}")
@@ -291,6 +302,7 @@ class Filter:
         assistant_msg = body["messages"][-1]
 
         if "service_msg" in mem:
+            body["messages"][-1]["content"] = mem["service_msg"]
             assistant_msg["content"] = mem["service_msg"]
             elapsed = time.perf_counter() - mem["start_time"]
             if __event_emitter__:
