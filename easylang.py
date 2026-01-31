@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.8.4
+Version: 0.8.8.5
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -120,10 +120,10 @@ class Filter:
         user_id = __user__.get("id", "default")
         current_model = body.get("model", "")
         content = messages[-1].get("content", "").strip()
+        bl, tl = self._get_bl(user_id) or "Auto", self._get_tl(user_id)
 
         # Help / Config
         if content.lower() == "t?":
-            bl, tl = self._get_bl(user_id) or "Auto", self._get_tl(user_id)
             help_msg = (
                 f"### 🌐 EasyLang Helper\n"
                 f"**Current Status:**\n"
@@ -164,6 +164,9 @@ class Filter:
                         "Respond immediately. ISO 639-1 code ONLY.",
                     )
                 )
+
+                self._dbg(f"DETECTION RAW: '{detected_lang}'")
+
                 if cmd == "TL":
                     self.chat_targets[user_id] = lang
                 else:
@@ -178,9 +181,9 @@ class Filter:
             }
             messages[-1]["content"] = "\u00a0"
             body["stream"] = False
-            return body
 
-        self.memory[user_id] = {"total_tokens": 0, "start_time": time.perf_counter()}
+            self._dbg(f"BL:{bl} | TL: {tl}")
+            return body
 
         # Translation Logic
         match = re.match(
@@ -201,8 +204,14 @@ class Filter:
         if not source_text:
             return body
 
-        # Detection
-        det_sys = "Respond immediately without thinking. Identify ISO 639-1 code. 2-letter code ONLY."
+        self.memory[user_id] = {"total_tokens": 0, "start_time": time.perf_counter()}
+
+        # --- LOGICA UNIFICATA DI PIVOTING E SWAP ---
+        bl = self.root_lan.get(user_id)
+        tl = self._get_tl(user_id)
+
+        # 1. Detection (Unica fonte di verità)
+        det_sys = "Respond immediately. ISO 639-1 code ONLY."
         detected_lang = await self._get_llm_response(
             f"Detect: {source_text[:100]}",
             current_model,
@@ -212,18 +221,31 @@ class Filter:
             det_sys,
         )
 
-        # Fixed Pivoting
+        # 2. Gestione Target (Forzato o Toggle)
         if lang_code and len(lang_code) == 2:
             target_lang = lang_code.lower()
-            self.chat_targets[user_id] = target_lang
+            # Pivot Swap: Se forzi una lingua, la sorgente attuale diventa la nuova BL
+            if detected_lang != target_lang:
+                self.root_lan[user_id] = detected_lang
+                self.chat_targets[user_id] = target_lang
+                self._dbg(f"Pivot Swap: BL={detected_lang}, TL={target_lang}")
         else:
-            bl, tl = self._get_bl(user_id), self._get_tl(user_id)
-            if not bl:
-                bl = detected_lang
-                self.root_lan[user_id] = bl
-            target_lang = bl if detected_lang == tl else tl
+            # Se non c'è BL (caso vergine), la inizializziamo ora
+            if bl is None:
+                if detected_lang != tl:
+                    self.root_lan[user_id] = detected_lang
+                    bl = detected_lang  # Aggiorniamo la variabile locale per il toggle sotto
+                    self._dbg(f"Initial Anchor: BL={bl}")
+                else:
+                    self._dbg("Anchoring Deferred: Input matches Default TL")
 
-        # Execution
+            # Toggle Logico Puro: se rilevo TL vado a BL, altrimenti vado a TL
+            # Se BL è ancora None (caso en->en), target_lang resterà tl (en)
+            target_lang = bl if (detected_lang == tl and bl) else tl
+
+        self._dbg(f"ROUTE: {detected_lang} -> {target_lang}")
+
+        # 4. ESECUZIONE
         trans_sys = f"You are a professional translator into ISO:{target_lang}. Respond immediately WITHOUT THINKING. Respond ONLY with the translation of the text inside <text> tags."
         translated_text = await self._get_llm_response(
             f"<text>{source_text}</text>",
@@ -305,7 +327,7 @@ class Filter:
 
         # Debug
         bl, tl = self._get_bl(user_id) or "Auto", self._get_tl(user_id)
-        self._dbg(f"[UID: {user_id}] [BL: {bl}] [TL: {tl}]")
+        self._dbg(f"BL:{bl} | TL: {tl}")
 
         # Telemetry
         elapsed = time.perf_counter() - mem["start_time"]
