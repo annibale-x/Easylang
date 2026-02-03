@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.9.3
+Version: 0.8.9.4
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -19,8 +19,8 @@ import time
 import json
 from typing import Optional
 from pydantic import BaseModel, Field
-from open_webui.main import generate_chat_completion
-from open_webui.models.users import UserModel
+from open_webui.main import generate_chat_completion  # type: ignore
+from open_webui.models.users import UserModel  # type: ignore
 from pathlib import Path
 
 
@@ -68,9 +68,14 @@ class Filter:
             self.ctx["lang"] = lang
 
         elif match := re.match(
-            r"^(trc|tr)(?:[-/]([a-zA-Z]{2,}))?(?:\s+(.*))?$", content, re.I | re.S
+            r"^(trc|tr)(?:\:([a-zA-Z]{2,}))?(?:\s+(.*))?$", content, re.I | re.S
         ):
-            cmd = "trtrc"
+            cmd = match.group(1).upper()
+            lang = match.group(2)
+            text = match.group(3).strip() if match.group(3) else ""
+            self.ctx["lang"] = lang
+            self.ctx["text"] = text
+            self._dbg(f" +++++++++++++ {cmd} {lang} {text}")
 
         else:
             return body
@@ -82,7 +87,7 @@ class Filter:
             {
                 "t0": time.perf_counter(),
                 "tk": 0,
-                "cid": body.get("metadata").get("chat_id"),
+                "cid": body["metadata"]["chat_id"],
                 "bm": bm,
                 "tm": tm,
                 "req": __request__,
@@ -107,29 +112,44 @@ class Filter:
 
         elif cmd in ("BL", "TL"):
             lang = self.ctx["lang"]
-
-            self._dbg(f"+++++++++++++++++++++++++++++ {cmd}")
-
             if lang:
-                self._dbg(f"+++++++++++++++++++++++++++++ {lang}")
                 new_lang = await self._to_iso(lang)
-                self._dbg(f"+++++++++++++++++++++++++++++ {new_lang}")
                 lang_key = cmd.lower()
                 curr_lang = self.ctx[lang_key]
-                self._dbg(f"+++++++++++++++++++++++++++++ {curr_lang}")
-                self._dbg(f"+++++++++++++++++++++++++++++ {lang_key}")
-
                 if new_lang != curr_lang:
                     self.ctx[lang_key] = new_lang
                     self._save_state()
                     self._dmp({"bl": self.ctx["bl"], "tl": self.ctx["tl"]}, "lang")
-                    self.ctx[
-                        "msg"
-                    ] = f"🗹 Current {cmd} switched from **{curr_lang}** to **{new_lang}**"
+                    self.ctx["msg"] = (
+                        f"🗹 Current {cmd} switched from **{curr_lang}** to **{new_lang}**"
+                    )
             else:
-                self.ctx[
-                    "msg"
-                ] = f"🛈 Current {cmd}: **{self.ctx['tl'] if cmd=='TL' else self.ctx['bl']}**"
+                self.ctx["msg"] = (
+                    f"🛈 Current {cmd}: **{self.ctx['tl'] if cmd=='TL' else self.ctx['bl']}**"
+                )
+
+        elif cmd in ("TR", "TRC"):
+
+            text = self.ctx["text"]
+            lang = self.ctx["lang"] or self.ctx["tl"]
+
+            if not text and cmd == "TR":  # TODO verificare se può andare per TRC
+                for m in reversed(messages[:-1]):
+                    if m.get("role") == "assistant":
+                        text = m.get("content", "")
+                        break
+            if not text:
+                return body
+
+            # Target language
+            tl = await self._to_iso(lang)
+
+            # Detected text language
+            dl = await self._query(
+                f"Detect: {text[:100]}", "Respond immediately. ISO 639-1 code ONLY."
+            )
+
+            self._dbg(f"[ TR/TRC ]\n\n>>>  {text}: {dl}->{lang} ({tl}) <<<\n")
 
         return self._suppress_output(body)
 
@@ -158,9 +178,9 @@ class Filter:
 
         # ----------------------------------------------------------------------------------
         tk = self.ctx.get("tk")
-        tt = time.perf_counter() - self.ctx.get("t0")
+        tt = tt = time.perf_counter() - self.ctx.get("t0", 0.0)
         t2 = round(tt, 2)
-        await __event_emitter__(
+        await __event_emitter__(  # type: ignore
             {
                 "type": "status",
                 "data": {"description": f"Done {t2}s | {tk} tokens", "done": True},
