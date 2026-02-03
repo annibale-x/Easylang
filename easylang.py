@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.9.1
+Version: 0.8.9.3
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -12,16 +12,23 @@ between the User and the LLM, enabling seamless translation, context-aware
 anchoring, and real-time performance telemetry.
 """
 
+import asyncio
 import re
 import sys
 import time
+import json
 from typing import Optional
 from pydantic import BaseModel, Field
 from open_webui.main import generate_chat_completion
+from open_webui.models.users import UserModel
+from pathlib import Path
 
 
 class Filter:
     class Valves(BaseModel):
+        target_language: str = Field(
+            default="en", description="Initial target language."
+        )
         translation_model: str = Field(
             default="", description="Model for translation. Empty = current."
         )
@@ -34,86 +41,7 @@ class Filter:
 
     def __init__(self):
         self.valves = self.Valves()
-        self.memory, self.root_lan, self.chat_targets, self._id_cache = {}, {}, {}, {}
-
-    def _dbg(self, message: str):
-        if self.valves.debug:
-            print(f"⚡ EASYLANG: {message}", file=sys.stderr, flush=True)
-
-    def _get_bl(self, user_id: str) -> Optional[str]:
-        return self.root_lan.get(user_id)
-
-    def _get_tl(self, user_id: str) -> str:
-        return self.chat_targets.get(user_id, "en")
-
-    def _suppress_output(self, body: dict) -> dict:
-        # Non svuotiamo i messaggi, ma iniettiamo un comando di stop immediato
-        body["messages"] = [{"role": "user", "content": "Respond with '.' and stop."}]
-        body["max_tokens"] = 1
-        if "stop" in body:
-            del body["stop"] # Puliamo eventuali stop precedenti
-        return body
-        
-    class UserWrapper:
-        def __init__(self, user_dict):
-            self.role, self.id = "user", "user_id"
-            if user_dict and isinstance(user_dict, dict):
-                for k, v in user_dict.items():
-                    setattr(self, k, v)
-
-    async def _get_llm_response(
-        self,
-        prompt: str,
-        model_id: str,
-        __request__,
-        __user__,
-        user_id: str,
-        system_instruction: str = "",
-    ) -> str:
-        selected_model = (
-            self.valves.translation_model if self.valves.translation_model else model_id
-        )
-        messages = []
-        if system_instruction:
-            messages.append({"role": "system", "content": system_instruction})
-        messages.append({"role": "user", "content": prompt})
-
-        payload = {
-            "model": selected_model,
-            "messages": messages,
-            "stream": False,
-            "temperature": 0,
-        }
-        try:
-            response = await generate_chat_completion(
-                __request__, payload, user=self.UserWrapper(__user__)
-            )
-            if response:
-                if user_id in self.memory:
-                    self.memory[user_id]["total_tokens"] += response.get(
-                        "usage", {}
-                    ).get("total_tokens", 0)
-
-                content = response["choices"][0]["message"]["content"].strip()
-                # Anti-Thinking & Tag Cleanup
-                content = re.sub(
-                    r"<think>.*?</think>", "", content, flags=re.DOTALL
-                ).strip()
-                content = re.sub(r"</?text>", "", content).strip()
-
-                if (
-                    "iso 639-1" in system_instruction.lower()
-                    and "translate" not in system_instruction.lower()
-                ):
-                    match = re.search(r"\b([a-z]{2})\b", content.lower())
-                    if match:
-                        return match.group(1)
-
-                return content.strip('"')
-            return ""
-        except Exception as e:
-            self._dbg(f"LLM Error: {e}")
-            return ""
+        self.ctx = {}
 
     async def inlet(
         self,
@@ -125,207 +53,268 @@ class Filter:
         messages = body.get("messages", [])
         if not messages or not __user__:
             return body
-        user_id = __user__.get("id", "default")
-        current_model = body.get("model", "")
+
         content = messages[-1].get("content", "").strip()
-        bl, tl = self._get_bl(user_id) or "Auto", self._get_tl(user_id)
-        service_msg = ""
-        start_time = time.perf_counter()
 
-        # Help / Config
+        cmd = ""
+
         if content.lower() == "t?":
-            # Leggi i dati reali aggiornati, ignorando le variabili locali bl/tl definite sopra
-            actual_bl = self.root_lan.get(user_id, "Auto")
-            actual_tl = self.chat_targets.get(user_id, "en")
-            service_msg = (
-                f"### 🌐 EasyLang Helper\n"
-                f"**Current Status:**\n"
-                f"* **BL** (Base Language): `{actual_bl}`\n"
-                f"  ↓\n"
-                f"* **TL** (Target Language): `{actual_tl}`\n\n"
-                f"**Commands:**\n"
-                f"* `tr <text>`: Toggle translate (BL ↔ TL).\n"
-                f"* `tr`: Translate last assistant message.\n"
-                f"* `tr-<lang> <text>`: Force target and update TL.\n"
-                f"* `trc <text>`: Translate and continue chat.\n"
-                f"* `tl <lang>` / `bl <lang>`: Manual configuration."
+            cmd = "HELP"
+
+        elif match := re.match(r"^(TL|BL)(?:\:(.+))?\s*$", content, re.I):
+            cmd, lang = match.group(1).upper(), (
+                match.group(2).strip() if match.group(2) else None
             )
-            
-        cfg_match = re.match(r"^(TL|BL)(?:[\s](.+))?$", content, re.I)
-        if cfg_match:
-            cmd, lang_raw = cfg_match.group(1).upper(), (
-                cfg_match.group(2).strip() if cfg_match.group(2) else None
-            )
-            if lang_raw:
-                lang = (
-                    lang_raw.lower()
-                    if len(lang_raw) == 2
-                    else await self._get_llm_response(
-                        f"lang:{lang_raw}",
-                        current_model,
-                        __request__,
-                        __user__,
-                        user_id,
-                        "Respond immediately. ISO 639-1 code ONLY.",
-                    )
-                )
+            self.ctx["lang"] = lang
 
-                if cmd == "TL":
-                    self.chat_targets[user_id] = lang
-                else:
-                    self.root_lan[user_id] = lang
-                service_msg = f"🗹 {cmd} set to: **{lang}**"
-            else:
-                service_msg = f"🛈 Current {cmd}: **{self.chat_targets.get(user_id, 'en') if cmd=='TL' else self.root_lan.get(user_id, 'Auto')}**"
-
-        # Deliver service message
-        if service_msg:
-            self.memory[user_id] = {
-                "service_msg": service_msg,
-                "start_time": time.perf_counter(),
-                "total_tokens": 0,
-                "mode": "service",
-            }
-            # messages[-1]["content"] = "EasyLang System Update"  # Testo dummy
-            # body["max_tokens"] = 1
-            body["stream"] = False 
-            return self._suppress_output(body)
-
-        # Translation Logic
-        match = re.match(
+        elif match := re.match(
             r"^(trc|tr)(?:[-/]([a-zA-Z]{2,}))?(?:\s+(.*))?$", content, re.I | re.S
-        )
-        if match:
-            prefix = match.group(1).lower()
-            lang_code = match.group(2)  # Sarà None se non c'è - o /
-            source_text = match.group(3).strip() if match.group(3) else ""
+        ):
+            cmd = "trtrc"
+
         else:
             return body
 
-        if not source_text and prefix == "tr":
-            for m in reversed(messages[:-1]):
-                if m.get("role") == "assistant":
-                    source_text = m.get("content", "")
-                    break
-        if not source_text:
-            return body
-
-        self.memory[user_id] = {
-            "mode": prefix,
-            "start_time": start_time,
-            "total_tokens": 0,
-            "original_user_text": content
-        }
-
-        # --- LOGICA DI TRADUZIONE (FIXED & INITIALIZED) ---
-        current_bl = self.root_lan.get(user_id, "it")
-        current_tl = self.chat_targets.get(user_id, "en")
-        detected_lang = "auto" # Inizializzazione di sicurezza
-
-        # 1. Detection (Sempre eseguita per alimentare la logica)
-        det_sys = "Respond immediately. ISO 639-1 code ONLY."
-        detected_lang = await self._get_llm_response(
-            f"Detect: {source_text[:100]}",
-            current_model, __request__, __user__, user_id, det_sys,
+        # ----------------------------------------------------------------------------------
+        bm = body.get("model", "")
+        tm = self.valves.translation_model or bm
+        self.ctx.update(
+            {
+                "t0": time.perf_counter(),
+                "tk": 0,
+                "cid": body.get("metadata").get("chat_id"),
+                "bm": bm,
+                "tm": tm,
+                "req": __request__,
+                "user": UserModel(**__user__),
+                "emitter": __event_emitter__,
+                "uid": __user__.get("id", "default"),
+                "cmd": cmd,
+            }
         )
+        # ----------------------------------------------------------------------------------
+        self._dbg(f"INLET {self.ctx['cid']} {cmd}")
+        # ----------------------------------------------------------------------------------
 
-        # 2. Pivot & Swap Logic
-        if lang_code:
-            target_lang = lang_code.lower() if len(lang_code) == 2 else await self._get_llm_response(f"lang:{lang_code}", current_model, __request__, __user__, user_id, "ISO 639-1 code ONLY.")
-            if not target_lang or len(target_lang) != 2: target_lang = current_tl
-            
-            # Se forzi una lingua, aggiorniamo i dizionari
-            self.root_lan[user_id] = detected_lang
-            self.chat_targets[user_id] = target_lang
-        else:
-            if not current_bl or current_bl == "Auto":
-                self.root_lan[user_id] = detected_lang
-                current_bl = detected_lang
-            
-            # SE è TRC: Vai sempre verso la Target (TL) per interrogare l'LLM
-            if prefix == "trc":
-                target_lang = current_tl
-            # SE è TR: Esegui lo swap intelligente
+        await self._update_state()
+
+        # ----------------------------------------------------------------------------------
+        self._dbg(f"STATE: {self.ctx['bl']}-{self.ctx['tl']}")
+        # ----------------------------------------------------------------------------------
+
+        if cmd == "HELP":
+            self.ctx["msg"] = self._service_msg()
+
+        elif cmd in ("BL", "TL"):
+            lang = self.ctx["lang"]
+
+            self._dbg(f"+++++++++++++++++++++++++++++ {cmd}")
+
+            if lang:
+                self._dbg(f"+++++++++++++++++++++++++++++ {lang}")
+                new_lang = await self._to_iso(lang)
+                self._dbg(f"+++++++++++++++++++++++++++++ {new_lang}")
+                lang_key = cmd.lower()
+                curr_lang = self.ctx[lang_key]
+                self._dbg(f"+++++++++++++++++++++++++++++ {curr_lang}")
+                self._dbg(f"+++++++++++++++++++++++++++++ {lang_key}")
+
+                if new_lang != curr_lang:
+                    self.ctx[lang_key] = new_lang
+                    self._save_state()
+                    self._dmp({"bl": self.ctx["bl"], "tl": self.ctx["tl"]}, "lang")
+                    self.ctx[
+                        "msg"
+                    ] = f"🗹 Current {cmd} switched from **{curr_lang}** to **{new_lang}**"
             else:
-                target_lang = current_bl if detected_lang == current_tl else current_tl
+                self.ctx[
+                    "msg"
+                ] = f"🛈 Current {cmd}: **{self.ctx['tl'] if cmd=='TL' else self.ctx['bl']}**"
 
-        # Salvataggio in memoria per l'Outlet
-        self.memory[user_id]["target_lang"] = target_lang
-        self.memory[user_id]["detected_lang"] = detected_lang
+        return self._suppress_output(body)
 
-        self._dbg(f"FINAL ROUTE: {detected_lang} -> {target_lang} (BL:{current_bl} TL:{current_tl})")
+    async def outlet(
+        self,
+        body: dict,
+        __user__: Optional[dict] = None,
+        __request__=None,
+        __event_emitter__=None,
+    ) -> dict:
+        assistant_msg = body["messages"][-1]
+        cmd = self.ctx.get("cmd")
+        msg = self.ctx.get("msg")
 
-        # 4. ESECUZIONE
-        trans_sys = f"You are a professional translator into ISO:{target_lang}. Respond immediately WITHOUT THINKING. Respond ONLY with the translation of the text inside <text> tags."
-        translated_text = await self._get_llm_response(
-            f"<text>{source_text}</text>",
-            current_model,
-            __request__,
-            __user__,
-            user_id,
-            trans_sys,
+        if not msg:
+            return body
+
+        # ----------------------------------------------------------------------------------
+        self._dbg(f"OUTLET {self.ctx['cid']} {cmd}")
+        # ----------------------------------------------------------------------------------
+
+        # ----------------------------------------------------------------------------------
+
+        if cmd in ("HELP", "TL", "BL"):
+            assistant_msg["content"] = self.ctx.get("msg", "Something went wrong")
+
+        # ----------------------------------------------------------------------------------
+        tk = self.ctx.get("tk")
+        tt = time.perf_counter() - self.ctx.get("t0")
+        t2 = round(tt, 2)
+        await __event_emitter__(
+            {
+                "type": "status",
+                "data": {"description": f"Done {t2}s | {tk} tokens", "done": True},
+            }
         )
-        
-        self.memory[user_id]["translated_input"] = translated_text
-        self.memory[user_id]["base_lang"] = current_bl
-        
-        if prefix == "tr":
-            body["stream"] = False
-            return self._suppress_output(body)
-        
-        # Se 'trc', proseguiamo normalmente con l'assistente
-        body["stream"] = False
-        messages[-1]["content"] = f"ACT AS TECHNICAL ASSISTANT. ANSWER IN {target_lang}: {translated_text}"
+
+        # self._dmp({"bl": self.ctx["bl"], "tl": self.ctx["tl"]}, "lang")
+        # self._dbg(f"TOKENS: {tk}")
+        # self._dbg(f"TIME: {t2}\n\n")
+
         return body
 
-    async def outlet(self, body: dict, __user__: Optional[dict] = None, __request__=None, __event_emitter__=None) -> dict:
-        user_id = (__user__ or {}).get("id", "default")
-        total_tokens_spent = 0
-        
-        if user_id not in self.memory: return body
-        
-        mem = self.memory.pop(user_id)
-        assistant_msg = body["messages"][-1]
-        mem["total_tokens"] += body.get("usage", {}).get("total_tokens", 0)
+    # =========================================================================
 
-        # 1. Messaggi di Servizio (Config/Help)
-        if mem.get("mode") == "service":
-            assistant_msg["content"] = mem["service_msg"]
-            desc = f"EasyLang: Config Updated | {(time.perf_counter() - mem['start_time']):.2f}s"
-        
-        # 2. Traduzione Secca (tr)
-        elif mem["mode"] == "tr":
-            assistant_msg["content"] = mem["translated_input"]
-            desc = f"Done | {(time.perf_counter() - mem['start_time']):.2f}s | {mem['total_tokens']} tokens"
+    def _service_msg(self) -> str:
+        bl = self.ctx.get("bl")
+        tl = self.ctx.get("tl")
+        return (
+            f"### 🌐 EasyLang Helper\n"
+            f"**Current Status:**\n"
+            f"* **BL** (Base): `{bl}`\n"
+            f"* **TL** (Target): `{tl}`\n\n"
+            f"**Commands:**\n"
+            f"* `tr <text>`: Translate (toggles **BL** ↔ **TL**).\n"
+            f"* `tr`: Translate last assistant message.\n"
+            f"* `trc <text>`: Translate and continue chat.\n"
+            f"* `tl` / `bl`: Show or configure **TL** / **BL**.\n\n"
+            f"**Notes:**\n"
+            f"* Append `:<lang>` to any command (e.g., `tr:fr`, `tl:it`) to update settings on the fly.\n"
+            f"* Languages can be entered in **any format or language** (e.g., `:italian`, `:jp`, `:español`);\n"
+            f"they will be automatically converted to **ISO 639-1** format."
+        )
 
-        # 3. Traduzione + Chat (trc)
-        elif mem["mode"] == "trc":
-            if len(body["messages"]) > 1:
-                body["messages"][-2]["content"] = mem.get("original_user_text", "")
-            
-            actual_bl = mem.get("base_lang") or self.root_lan.get(user_id, "it")
-            
-            if self.valves.back_translation:
-                # Prompt rinforzato: specifichiamo il nome della lingua oltre al codice
-                lang_names = {"it": "ITALIAN", "en": "ENGLISH", "fr": "FRENCH", "es": "SPANISH"}
-                target_name = lang_names.get(actual_bl, actual_bl.upper())
-                
-                bt_sys = f"You are a professional translator. Translate the user text EXCLUSIVELY into {target_name}. Respond ONLY with the translated text, no explanations."
-                
-                back_translated = await self._get_llm_response(
-                    assistant_msg["content"], 
-                    body.get("model", ""), __request__, __user__, user_id, bt_sys
-                )
-                
-                if back_translated:
-                    # DEBUG CRUCIALE: Vediamo cosa ha sputato fuori l'LLM
-                    self._dbg(f"BT Result: {back_translated[:50]}...")
-                    assistant_msg["content"] = back_translated
-            
-            desc = f"Done | {(time.perf_counter() - mem['start_time']):.2f}s | {mem['total_tokens']} tokens"
+    def _save_state(self):
+        ctx = self.ctx
+        filename = Path(f"/tmp/{ctx['cid']}.el")
+        try:
+            with open(filename, "w") as f:
+                f.write(f"{ctx['bl']}{ctx['tl']}")
+        except Exception as e:
+            self._err(e)
 
-        # Telemetria Unificata
-        if __event_emitter__:
-            await __event_emitter__({"type": "status", "data": {"description": desc, "done": True}})
-        
+        return True
+
+    async def _update_state(self):
+        ctx = self.ctx
+        filename = Path(f"/tmp/{ctx['cid']}.el")
+
+        # GETTER: controlla esistenza PRIMA di leggere
+        if not filename.exists():
+            if self.valves.target_language:
+                bl = await self._to_iso(self.valves.target_language)
+            else:
+                bl = "en"
+
+            try:
+                with open(filename, "w") as f:
+                    f.write(f"{bl}{bl}")
+            except Exception as e:
+                self._err(e)
+
+        content = filename.read_text().strip()
+        ctx.update({"bl": content[:2], "tl": content[2:]})
+
+    async def _to_iso(self, lang) -> str:
+        # Test if already ISO 639-1 code
+        match = re.search(r"\b([a-z]{2})\b", lang.lower())
+        if match:
+            return match.group(1)
+        iso_lang = await self._query(
+            f"lang:{lang}", "Respond immediately. ISO 639-1 code ONLY."
+        )
+
+        return iso_lang
+
+    async def _query(self, prompt: str, instruct: str = "") -> str:
+        ctx = self.ctx
+        req = ctx.get("req")
+
+        selected_model = ctx.get("bm")
+        user = ctx.get("user")
+
+        messages = []
+        if instruct:
+            messages.append({"role": "system", "content": instruct})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": selected_model,
+            "messages": messages,
+            "stream": False,
+            "temperature": 0,
+        }
+
+        try:
+            response = await generate_chat_completion(req, payload, user)
+            if response:
+                self.ctx["tk"] += response.get("usage", {}).get("total_tokens", 0)
+
+                content = response["choices"][0]["message"]["content"].strip()
+                content = re.sub(
+                    r"<think>.*?</think>", "", content, flags=re.DOTALL
+                ).strip()
+                content = re.sub(r"</?text>", "", content).strip()
+                return content.strip('"')
+            return ""
+        except Exception as e:
+            self._err(e)  # Await the error reporter
+            return ""
+
+    # =========================================================================
+
+    def _dbg(self, message: str):
+        if self.valves.debug:
+            print(f"⚡EASYLANG: {message}", file=sys.stderr, flush=True)
+
+    def _dmp(self, data, title: Optional[str] = "data"):
+        if self.valves.debug:
+            header = "—" * 80 + "\n📦 EASYMAGE DUMP\n" + "—" * 80
+            print(header, file=sys.stderr, flush=True)
+            print(
+                f"{title}: " + json.dumps(data, indent=4),
+                file=sys.stderr,
+                flush=True,
+            )
+            print("—" * 80, file=sys.stderr, flush=True)
+
+    def _err(self, e: Exception):
+        """Synchronous error handler that schedules emitter tasks if needed."""
+        err_msg = str(e)
+        print(f"❌ EASYLANG ERROR: {err_msg}", file=sys.stderr, flush=True)
+
+        emitter = self.ctx.get("emitter")
+
+        if emitter:
+            # Schedule the async emission without blocking the sync caller
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(
+                        emitter(
+                            {
+                                "type": "message",
+                                "data": {"content": f"❌ ERROR: {err_msg}\n"},
+                            }
+                        )
+                    )
+            except Exception:
+                pass
+
+    def _suppress_output(self, body: dict) -> dict:
+        # Non svuotiamo i messaggi, ma iniettiamo un comando di stop immediato
+        body["messages"] = [{"role": "user", "content": "Respond with a single dot"}]
+        body["max_tokens"] = 1
+        if "stop" in body:
+            del body["stop"]  # Puliamo eventuali stop precedenti
         return body
