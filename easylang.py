@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.9.4
+Version: 0.8.9.5
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -68,14 +68,17 @@ class Filter:
             self.ctx["lang"] = lang
 
         elif match := re.match(
-            r"^(trc|tr)(?:\:([a-zA-Z]{2,}))?(?:\s+(.*))?$", content, re.I | re.S
+            r"^(trc|tr)(?:\:([^\s]+))?(?:\s+(.*))?$", content, re.I | re.S
         ):
             cmd = match.group(1).upper()
-            lang = match.group(2)
+            # Il gruppo 2 ora prende solo ciò che è attaccato ai ":" senza spazi
+            lang = match.group(2) if match.group(2) else None
+            # Il gruppo 3 prende tutto il resto dopo lo spazio
             text = match.group(3).strip() if match.group(3) else ""
+
             self.ctx["lang"] = lang
             self.ctx["text"] = text
-            self._dbg(f" +++++++++++++ {cmd} {lang} {text}")
+            self._dbg(f"Parsed: CMD={cmd}, LANG={lang}, TEXT={text}")
 
         else:
             return body
@@ -131,7 +134,9 @@ class Filter:
         elif cmd in ("TR", "TRC"):
 
             text = self.ctx["text"]
-            lang = self.ctx["lang"] or self.ctx["tl"]
+            lang = self.ctx["lang"]  # or self.ctx["tl"]
+
+            # Work on input language
 
             if not text and cmd == "TR":  # TODO verificare se può andare per TRC
                 for m in reversed(messages[:-1]):
@@ -141,15 +146,70 @@ class Filter:
             if not text:
                 return body
 
-            # Target language
-            tl = await self._to_iso(lang)
-
-            # Detected text language
-            dl = await self._query(
+            # Input text language
+            text_lang = await self._query(
                 f"Detect: {text[:100]}", "Respond immediately. ISO 639-1 code ONLY."
             )
 
-            self._dbg(f"[ TR/TRC ]\n\n>>>  {text}: {dl}->{lang} ({tl}) <<<\n")
+            # 1. Current state recovery and default target definition
+            bl = self.ctx.get("bl")
+            tl_state = self.ctx.get("tl")
+
+            # 2. Target Determination Logic (Toggle Rule & Context Recovery)
+            # If the user has not sent text, we are translating the last assistant message.
+            # In this case, we always invert with respect to the language detected in the message.
+            if text_lang == tl_state:
+                target_lang = bl
+                self._dbg(f"Toggle: Detected TL ({text_lang}) -> Target BL ({bl})")
+            elif text_lang == bl:
+                target_lang = tl_state
+                self._dbg(
+                    f"Toggle: Detected BL ({text_lang}) -> Target TL ({tl_state})"
+                )
+            else:
+                # If it's a completely new language, anchor it as SL and translate into TL
+                # Unless it is a blank TR, where we force a return to BL.
+                if not self.ctx.get("text"):
+                    target_lang = bl
+                    self._dbg(
+                        f"Context Recovery: Language mismatch, forcing fallback to BL ({bl})"
+                    )
+                else:
+                    self.ctx["bl"] = text_lang
+                    target_lang = tl_state
+                    self._save_state()
+                    self._dbg(
+                        f"Re-Anchoring: New BL ({text_lang}) -> Target TL ({tl_state})"
+                    )
+
+            # 3. Override manual ISO (ex.: it:en)
+            # If the user specifies es,en, force the target and update the TL pointer
+            if lang:
+                target_lang = await self._to_iso(lang)
+                self.ctx["tl"] = target_lang
+                self.ctx["bl"] = text_lang
+                self._save_state()
+                self._dbg(f"Manual Override: TL updated to {target_lang}")
+
+            # 4. Execution Translation
+            instruction = (
+                f"RULE: Translate the following text to language (ISO 639-1): {target_lang}. "
+                "RULE: Preserve formatting and tone. Respond ONLY with the translation."
+            )
+
+            translated_text = await self._query(text, instruction)
+
+            # 5. Routing Output
+            if cmd == "TR":
+                self.ctx["msg"] = translated_text
+            else:
+                # For TRC, we modify the message body and let it flow to the LLM
+                enforced_text = f"{translated_text}\n\nRULE: I want you to respond strictly in language (ISO 639-1): {target_lang}"
+                body["messages"][-1]["content"] = enforced_text
+                self._dbg(f"TRC:{enforced_text}")
+                return body
+
+            self._dbg(f"[ TR/TRC ]\n\n>>>  {text}: {text_lang}->{lang}  <<<\n")
 
         return self._suppress_output(body)
 
@@ -171,10 +231,14 @@ class Filter:
         self._dbg(f"OUTLET {self.ctx['cid']} {cmd}")
         # ----------------------------------------------------------------------------------
 
-        # ----------------------------------------------------------------------------------
-
-        if cmd in ("HELP", "TL", "BL"):
+        if cmd in ("HELP", "TL", "BL", "TR"):
             assistant_msg["content"] = self.ctx.get("msg", "Something went wrong")
+
+        elif cmd == "TRC":
+            pass
+        else:
+            assistant_msg["content"] = "Whoops... Something went wrong"
+            return body
 
         # ----------------------------------------------------------------------------------
         tk = self.ctx.get("tk")
@@ -186,10 +250,6 @@ class Filter:
                 "data": {"description": f"Done {t2}s | {tk} tokens", "done": True},
             }
         )
-
-        # self._dmp({"bl": self.ctx["bl"], "tl": self.ctx["tl"]}, "lang")
-        # self._dbg(f"TOKENS: {tk}")
-        # self._dbg(f"TIME: {t2}\n\n")
 
         return body
 
