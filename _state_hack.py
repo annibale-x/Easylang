@@ -3,6 +3,7 @@ import datetime
 from typing import Optional
 import re
 
+
 class Filter:
     def __init__(self):
         # Mappa Hex (0-f) -> Caratteri Invisibili (Zero Width)
@@ -26,7 +27,8 @@ class Filter:
         }
         self.inv_to_hex = {v: k for k, v in self.hex_to_inv.items()}
         # Marker invisibile per identificare l'inizio della riga di stato
-        self.LINE_MARKER = "\u200b"
+        self.LINE_MARKER = "\u200a"
+        self.END_MARKER = "\u2067"
 
     def _state(self, messages: list, data: Optional[dict] = None) -> Optional[dict]:
         """Getter/Setter polimorfico per gestire lo stato invisibile."""
@@ -38,14 +40,13 @@ class Filter:
             return None
 
         # Definiamo il terminatore invisibile (es. U+2064)
-        END_MARKER = "\u2064"
         current_content = messages[target_idx].get("content", "")
 
         # --- SETTER (Scrittura) ---
         if data is not None:
             # Rimuoviamo eventuale stato precedente tramite regex (dal marker al terminatore)
             clean_content = re.sub(
-                f"{re.escape(self.LINE_MARKER)}.*?{re.escape(END_MARKER)}",
+                f"{re.escape(self.LINE_MARKER)}.*?{re.escape(self.END_MARKER)}",
                 "",
                 current_content,
                 flags=re.DOTALL,
@@ -59,13 +60,13 @@ class Filter:
             # Aggiornamento: Append diretto senza \n
             messages[target_idx][
                 "content"
-            ] = f"{clean_content}{self.LINE_MARKER}{encoded_payload}{END_MARKER}"
+            ] = f"{clean_content}{self.LINE_MARKER}{encoded_payload}{self.END_MARKER}"
             return data
 
         # --- GETTER (Lettura) ---
         # Estrazione tramite regex del contenuto tra i marker
         match = re.search(
-            f"{re.escape(self.LINE_MARKER)}(.*?){re.escape(END_MARKER)}",
+            f"{re.escape(self.LINE_MARKER)}(.*){re.escape(self.END_MARKER)}",
             current_content,
             flags=re.DOTALL,
         )
@@ -73,7 +74,16 @@ class Filter:
         if match:
             encoded_str = match.group(1)
             try:
-                hex_str = "".join(self.inv_to_hex[c] for c in encoded_str)
+                # FIX: Filtra SOLO i caratteri che appartengono alla tua mappa
+                # Se c'è un carattere spurio a pos 19, questo lo ignora e non spacca fromhex
+                hex_str = "".join(
+                    self.inv_to_hex[c] for c in encoded_str if c in self.inv_to_hex
+                )
+
+                # Protezione: fromhex vuole una stringa di lunghezza pari
+                if not hex_str or len(hex_str) % 2 != 0:
+                    return {}
+
                 return json.loads(bytes.fromhex(hex_str).decode("utf-8"))
             except Exception as e:
                 print(f"[ERROR] Decodifica fallita: {e}")
@@ -88,6 +98,8 @@ class Filter:
 
         # Recuperiamo lo stato salvato precedentemente
         state = self._state(messages)
+        # print("MESSAGES IN INLET")
+        # print(json.dumps(messages, indent=4))
 
         if state:
             print(f"✅ STATO RECUPERATO: {state}")
@@ -105,6 +117,7 @@ class Filter:
         # Generiamo il nuovo timestamp
         ts_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         new_data = {"ts": ts_now}
+        new_data = {"bl": "en", "tl": "en"}
 
         # Salviamo il JSON nello stato invisibile
         self._state(messages, data=new_data)
@@ -113,4 +126,3 @@ class Filter:
         print("=" * 54 + "\n")
 
         return body
-
