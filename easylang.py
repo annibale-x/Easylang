@@ -27,7 +27,7 @@ from pathlib import Path
 class Filter:
     class Valves(BaseModel):
         target_language: str = Field(
-            default="en", description="Initial target language."
+            default="en", description="Initial target language. "
         )
         translation_model: str = Field(
             default="", description="Model for translation. Empty = current."
