@@ -136,7 +136,7 @@ Since EasyLang re-processes the input through a high-fidelity LLM translation la
 
 ---
 
-### ⚠️ Early Release & Beta Notice**
+### ‼️ Early Release & Beta Notice**
 While the core logic is solid, it has not yet been extensively stress-tested for all possible edge cases. The filter is currently undergoing intensive development and testing. Please be patient with any anomalies or unexpected behavior. 
 
 If you encounter bugs or logic errors, please open an [issue](https://github.com/annibale-x/Easylang/issues) on GitHub.
