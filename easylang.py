@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.8.9.5
+Version: 0.1.8
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -42,6 +42,10 @@ class Filter:
     def __init__(self):
         self.valves = self.Valves()
         self.ctx = {}
+        self.RE_HELP = re.compile(r"^t\?$", re.I)
+        self.RE_CONFIG = re.compile(r"^(TL|BL)(?:\:(.+))?\s*$", re.I)
+        self.RE_TRANS = re.compile(r"^(TRC|TR)(?:\:([a-z]{2,10}))?(?:\s+(.*))?$", re.I | re.S)
+        self.RE_ISO = re.compile(r"\b([a-z]{2})\b", re.I)
 
     async def inlet(
         self,
@@ -57,27 +61,26 @@ class Filter:
         content = messages[-1].get("content", "").strip()
 
         cmd = ""
+        ctx = self.ctx
 
-        if content.lower() == "t?":
+        if self.RE_HELP.match(content):
             cmd = "HELP"
 
-        elif match := re.match(r"^(TL|BL)(?:\:(.+))?\s*$", content, re.I):
+        elif match := self.RE_CONFIG.match(content):
             cmd, lang = match.group(1).upper(), (
                 match.group(2).strip() if match.group(2) else None
             )
-            self.ctx["lang"] = lang
+            ctx["lang"] = lang
 
-        elif match := re.match(
-            r"^(trc|tr)(?:\:([^\s]+))?(?:\s+(.*))?$", content, re.I | re.S
-        ):
+        elif match := self.RE_TRANS.match(content):
             cmd = match.group(1).upper()
             # Il gruppo 2 ora prende solo ciò che è attaccato ai ":" senza spazi
             lang = match.group(2) if match.group(2) else None
             # Il gruppo 3 prende tutto il resto dopo lo spazio
             text = match.group(3).strip() if match.group(3) else ""
 
-            self.ctx["lang"] = lang
-            self.ctx["text"] = text
+            ctx["lang"] = lang
+            ctx["text"] = text
             self._dbg(f"Parsed: CMD={cmd}, LANG={lang}, TEXT={text}")
 
         else:
@@ -86,7 +89,7 @@ class Filter:
         # ----------------------------------------------------------------------------------
         bm = body.get("model", "")
         tm = self.valves.translation_model or bm
-        self.ctx.update(
+        ctx.update(
             {
                 "t0": time.perf_counter(),
                 "tk": 0,
@@ -101,40 +104,40 @@ class Filter:
             }
         )
         # ----------------------------------------------------------------------------------
-        self._dbg(f"INLET {self.ctx['cid']} {cmd}")
+        self._dbg(f"INLET {ctx['cid']} {cmd}")
         # ----------------------------------------------------------------------------------
 
         await self._update_state()
 
         # ----------------------------------------------------------------------------------
-        self._dbg(f"STATE: {self.ctx['bl']}-{self.ctx['tl']}")
+        self._dbg(f"STATE: {ctx['bl']}-{ctx['tl']}")
         # ----------------------------------------------------------------------------------
 
         if cmd == "HELP":
-            self.ctx["msg"] = self._service_msg()
+            ctx["msg"] = self._service_msg()
 
         elif cmd in ("BL", "TL"):
-            lang = self.ctx["lang"]
+            lang = ctx["lang"]
             if lang:
                 new_lang = await self._to_iso(lang)
                 lang_key = cmd.lower()
-                curr_lang = self.ctx[lang_key]
+                curr_lang = ctx[lang_key]
                 if new_lang != curr_lang:
-                    self.ctx[lang_key] = new_lang
+                    ctx[lang_key] = new_lang
                     self._save_state()
-                    self._dmp({"bl": self.ctx["bl"], "tl": self.ctx["tl"]}, "lang")
-                    self.ctx["msg"] = (
+                    self._dmp({"bl": ctx["bl"], "tl": ctx["tl"]}, "lang")
+                    ctx["msg"] = (
                         f"🗹 Current {cmd} switched from **{curr_lang}** to **{new_lang}**"
                     )
             else:
-                self.ctx["msg"] = (
-                    f"🛈 Current {cmd}: **{self.ctx['tl'] if cmd=='TL' else self.ctx['bl']}**"
+                ctx["msg"] = (
+                    f"🛈 Current {cmd}: **{ctx['tl'] if cmd=='TL' else ctx['bl']}**"
                 )
 
         elif cmd in ("TR", "TRC"):
 
-            text = self.ctx["text"]
-            lang = self.ctx["lang"]  # or self.ctx["tl"]
+            text = ctx["text"]
+            lang = ctx["lang"]  # or self.ctx["tl"]
 
             # Work on input language
 
@@ -147,13 +150,14 @@ class Filter:
                 return body
 
             # Input text language
+            await self._status("Detecting the base language")
             text_lang = await self._query(
                 f"Detect: {text[:100]}", "Respond immediately. ISO 639-1 code ONLY."
             )
 
             # 1. Current state recovery and default target definition
-            bl = self.ctx.get("bl")
-            tl_state = self.ctx.get("tl")
+            bl = ctx.get("bl")
+            tl_state = ctx.get("tl")
 
             # 2. Target Determination Logic (Toggle Rule & Context Recovery)
             # If the user has not sent text, we are translating the last assistant message.
@@ -169,13 +173,13 @@ class Filter:
             else:
                 # If it's a completely new language, anchor it as SL and translate into TL
                 # Unless it is a blank TR, where we force a return to BL.
-                if not self.ctx.get("text"):
+                if not ctx.get("text"):
                     target_lang = bl
                     self._dbg(
                         f"Context Recovery: Language mismatch, forcing fallback to BL ({bl})"
                     )
                 else:
-                    self.ctx["bl"] = text_lang
+                    ctx["bl"] = text_lang
                     target_lang = tl_state
                     self._save_state()
                     self._dbg(
@@ -186,8 +190,8 @@ class Filter:
             # If the user specifies es,en, force the target and update the TL pointer
             if lang:
                 target_lang = await self._to_iso(lang)
-                self.ctx["tl"] = target_lang
-                self.ctx["bl"] = text_lang
+                ctx["tl"] = target_lang
+                ctx["bl"] = text_lang
                 self._save_state()
                 self._dbg(f"Manual Override: TL updated to {target_lang}")
 
@@ -197,16 +201,23 @@ class Filter:
                 "RULE: Preserve formatting and tone. Respond ONLY with the translation."
             )
 
+            await self._status(
+                f"Translating from {text_lang.upper()} to {target_lang.upper()}"
+            )
             translated_text = await self._query(text, instruction)
 
             # 5. Routing Output
             if cmd == "TR":
-                self.ctx["msg"] = translated_text
+                ctx["msg"] = translated_text
             else:
                 # For TRC, we modify the message body and let it flow to the LLM
                 enforced_text = f"{translated_text}\n\nRULE: I want you to respond strictly in language (ISO 639-1): {target_lang}"
                 body["messages"][-1]["content"] = enforced_text
                 self._dbg(f"TRC:{enforced_text}")
+
+                if self.valves.back_translation:
+                    await self._status(f"Sending {target_lang.upper()} prompt to model")
+
                 return body
 
             self._dbg(f"[ TR/TRC ]\n\n>>>  {text}: {text_lang}->{lang}  <<<\n")
@@ -221,39 +232,60 @@ class Filter:
         __event_emitter__=None,
     ) -> dict:
         assistant_msg = body["messages"][-1]
-        cmd = self.ctx.get("cmd")
-        msg = self.ctx.get("msg")
+        ctx = self.ctx
+        cmd = ctx.get("cmd")
+        msg = ctx.get("msg")
 
-        if not msg:
+        if not cmd:
             return body
 
         # ----------------------------------------------------------------------------------
-        self._dbg(f"OUTLET {self.ctx['cid']} {cmd}")
+        self._dbg(f"OUTLET {ctx['cid']} {cmd}")
         # ----------------------------------------------------------------------------------
 
-        if cmd in ("HELP", "TL", "BL", "TR"):
-            assistant_msg["content"] = self.ctx.get("msg", "Something went wrong")
+        if self.valves.back_translation and cmd == "TRC":
+            content = assistant_msg.get("content", "")
+            if content:
+                base_lang = ctx["bl"]
+                await self._status(
+                    f"Back-translating from {ctx['tl'].upper()} to {base_lang.upper()}"
+                )
+                instruction = (
+                    f"RULE: Translate the following text to language (ISO 639-1): {base_lang}. "
+                    "RULE: Preserve formatting and tone. Respond ONLY with the translation."
+                )
+                # Traduzione silenziosa tramite modello di traduzione
+                translated = await self._query(content, instruction)
+                if translated:
+                    assistant_msg["content"] = translated
 
-        elif cmd == "TRC":
-            pass
-        else:
-            assistant_msg["content"] = "Whoops... Something went wrong"
-            return body
+        elif cmd in ("HELP", "TL", "BL", "TR"):
+            assistant_msg["content"] = ctx.get("msg", "Something went wrong")
 
         # ----------------------------------------------------------------------------------
-        tk = self.ctx.get("tk")
-        tt = tt = time.perf_counter() - self.ctx.get("t0", 0.0)
+        tk = ctx.get("tk")
+        tt = time.perf_counter() - ctx.get("t0", 0.0)
         t2 = round(tt, 2)
-        await __event_emitter__(  # type: ignore
-            {
-                "type": "status",
-                "data": {"description": f"Done {t2}s | {tk} tokens", "done": True},
-            }
-        )
+        await self._status(f"Done {t2}s | {tk} tokens", True)  # type: ignore
 
         return body
 
     # =========================================================================
+
+    async def _status(self, description: str, done: bool = False):
+        emitter = self.ctx.get("emitter")
+        if not emitter:
+            return
+
+        await emitter(  # type: ignore
+            {
+                "type": "status",
+                "data": {
+                    "description": description,
+                    "done": done,
+                },
+            }
+        )
 
     def _service_msg(self) -> str:
         bl = self.ctx.get("bl")
@@ -281,9 +313,8 @@ class Filter:
             with open(filename, "w") as f:
                 f.write(f"{ctx['bl']}{ctx['tl']}")
         except Exception as e:
-            self._err(e)
-
-        return True
+            self._dbg(f"Critical I/O Error: {e}")
+            self._err(f"EasyLang State Error: Unable to save preferences ({e})")
 
     async def _update_state(self):
         ctx = self.ctx
@@ -303,24 +334,34 @@ class Filter:
                 self._err(e)
 
         content = filename.read_text().strip()
-        ctx.update({"bl": content[:2], "tl": content[2:]})
+        if len(content) >= 4:
+            ctx.update({"bl": content[:2], "tl": content[2:]})
+        else:
+            ctx.update({"bl": "en", "tl": "en"}) # Fallback
 
     async def _to_iso(self, lang) -> str:
-        # Test if already ISO 639-1 code
-        match = re.search(r"\b([a-z]{2})\b", lang.lower())
+        clean_lang = lang.strip().lower()
+        
+        # 1. Controllo se è GIÀ un codice ISO puro (es: "it", "en")
+        if len(clean_lang) == 2 and clean_lang.isalpha():
+            return clean_lang
+
+        # 2. Uso della regex per cercare un ISO dentro una stringa sporca (es: ":it")
+        match = self.RE_ISO.search(clean_lang)
         if match:
             return match.group(1)
+
+        # 3. Fallback all'LLM se non abbiamo trovato nulla di ovvio
         iso_lang = await self._query(
             f"lang:{lang}", "Respond immediately. ISO 639-1 code ONLY."
         )
-
         return iso_lang
 
     async def _query(self, prompt: str, instruct: str = "") -> str:
         ctx = self.ctx
         req = ctx.get("req")
 
-        selected_model = ctx.get("bm")
+        selected_model = ctx.get("tm")
         user = ctx.get("user")
 
         messages = []
@@ -338,7 +379,7 @@ class Filter:
         try:
             response = await generate_chat_completion(req, payload, user)
             if response:
-                self.ctx["tk"] += response.get("usage", {}).get("total_tokens", 0)
+                ctx["tk"] += response.get("usage", {}).get("total_tokens", 0)
 
                 content = response["choices"][0]["message"]["content"].strip()
                 content = re.sub(
