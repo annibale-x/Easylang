@@ -1,5 +1,5 @@
 
-# 🌐 EasyLang: Easy Translation Assistant Filter
+## 🌐 EasyLang: Easy Translation Assistant Filter
 
 State-aware translation assistant for Open WebUI. Features smart bidirectional toggling, context-based summarization, and precision performance tracking.
 
