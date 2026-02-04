@@ -1,4 +1,5 @@
 
+
 ## 🌐 EasyLang: Easy Translation Assistant Filter
 
 State-aware translation assistant for Open WebUI. Features smart bidirectional toggling, context-based summarization, and precision performance tracking.
@@ -43,8 +44,8 @@ Every command containing `<text>` triggers a **Language Detection** routine. The
 | :--- | :--- | :--- |
 | **`tr <text>`** | **Dynamic Toggle** | Detects input: If `TL` → Translates to `BL`. Otherwise → Translates to `TL`. |
 | **`tr`** | **Context Recovery** | Scrapes the last `assistant` message and executes a symmetric translation. |
-| **`trs <text>`** | **Summarize** | **[NEW]** Translates and summarizes text in `TL` using bullet points. |
-| **`trs`** | **Context Summary** | Summarizes the last `assistant` message in the target language. |
+| **`trs <text>`** | **Structured Summary** | **[NEW]** Generates a dense, hierarchical summary in `TL` preserving technical depth. |
+| **`trs`** | **Context Summary** | Extracts and structures the core information from the last assistant message. |
 | **`trc <text>`** | **Chat Continuation** | Translates input and injects it into the LLM stream to continue the chat. |
 | **`<cmd>:<lang>`** | **Force Language** | Valid for `tr:`, `trs:`, `trc:`. Overrides `TL` and updates the pointer. |
 | **`bl:<lang>` / `tl:<lang>`** | **Manual Set** | Sets `BL` or `TL` using full names or 2-letter ISO codes. |
@@ -114,7 +115,7 @@ Upon completion, every translation displays a real-time telemetry status:
 | :--- | :--- | :---: | :---: | :--- |
 | `tr ciao` | hello | `it` | `en` | **Initial Anchor**: `it` detected as BL. Default TL (`en`) applied. |
 | `trc:fr come va?` | *[LLM Response]* | `it` | `fr` | **Force & Inject**: Sets TL to `fr`, translates, and sends to LLM. |
-| `trs ciao...` | *[Summary in FR]* | `it` | `fr` | **Summarization**: Creates a bulleted summary in the current TL (`fr`). |
+| `trs ciao...` | *[Summary in FR]* | `it` | `fr` | **Summarization**: Creates a dense hierarchical summary in the current TL. (`fr`). |
 | `tr comment ça va?` | come va? | `it` | `fr` | **Symmetric Toggle**: Input is TL (`fr`), translates back to BL (`it`). |
 | `tr:es ciao` | hola | `it` | `es` | **Forced Target**: `:` override updates TL to `es` and translates. |
 | `tr Hola!` | ciao | `es` | `es` | **Self-Correction**: Input is `es`, pointers sync and text is refined. |

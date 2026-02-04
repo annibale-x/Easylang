@@ -203,8 +203,9 @@ class Filter:
 
             if cmd == "TRS":
                 instruction = (
-                    f"RULE: Summarize the following text accurately in language (ISO 639-1): {target_lang}. "
-                    "RULE: Use bullet points for key concepts. Respond ONLY with the translated summary."
+                    f"RULE: Provide a detailed and comprehensive summary of the following text in language (ISO 639-1): {target_lang}. "
+                    "RULE: Use structured bullet points to preserve technical depth, logical arguments, and critical details. "
+                    "Respond ONLY with the translated summary."
                 )
                 status_msg = f"Summarizing in {target_lang.upper()}..."
             else:
