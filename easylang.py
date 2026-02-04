@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.1.9
+Version: 0.2.0
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -17,7 +17,7 @@ import re
 import sys
 import time
 import json
-from typing import Optional
+from typing import Optional, Union
 from pydantic import BaseModel, Field
 from open_webui.main import generate_chat_completion  # type: ignore
 from open_webui.models.users import UserModel  # type: ignore
@@ -45,7 +45,7 @@ class Filter:
         self.RE_HELP = re.compile(r"^t\?$", re.I)
         self.RE_CONFIG = re.compile(r"^(TL|BL)(?:\:(.+))?\s*$", re.I)
         self.RE_TRANS = re.compile(
-            r"^(TRC|TR)(?:\:([a-z]{2,10}))?(?:\s+(.*))?$", re.I | re.S
+            r"^(TRS|TRC|TR)(?:\:([a-z]{2,10}))?(?:\s+(.*))?$", re.I | re.S
         )
         self.RE_ISO = re.compile(r"\b([a-z]{2})\b", re.I)
 
@@ -139,13 +139,13 @@ class Filter:
                     f"🛈 Current {cmd}: **{ctx['tl'] if cmd=='TL' else ctx['bl']}**"
                 )
 
-        elif cmd in ("TR", "TRC"):
+        elif cmd in ("TR", "TRC", "TRS"):
 
             text = ctx["text"]
             lang = ctx["lang"]
 
-            if not text and cmd == "TR":
-                self._dbg("Empty TR detected, fetching last assistant message...")
+            if not text and cmd in ("TR", "TRS"):
+                self._dbg(f"Empty {cmd} detected, fetching last assistant message...")
                 for m in reversed(messages[:-1]):
                     if m.get("role") == "assistant":
                         text = m.get("content", "")
@@ -160,8 +160,10 @@ class Filter:
             )
             self._dbg(f"Detected input language: {text_lang}")
 
-            bl = ctx.get("bl")
-            tl_state = ctx.get("tl")
+            # Type declaration to avoid stupid Pyright errors...
+            bl = str(ctx.get("bl"))
+            tl_state = str(ctx.get("tl"))
+            target_lang: str = ""
 
             if text_lang == tl_state:
                 target_lang = bl
@@ -196,16 +198,24 @@ class Filter:
                     f"Manual Override active: Force TL={target_lang}, BL={text_lang}"
                 )
 
-            instruction = (
-                f"RULE: Translate the following text to language (ISO 639-1): {target_lang}. "
-                "RULE: Preserve formatting and tone. Respond ONLY with the translation."
-            )
+            instruction = ""
+            status_msg = ""
 
-            if text_lang.lower() == target_lang.lower():
-                status_msg = f"Refining text in {target_lang.upper()}"
+            if cmd == "TRS":
+                instruction = (
+                    f"RULE: Summarize the following text accurately in language (ISO 639-1): {target_lang}. "
+                    "RULE: Use bullet points for key concepts. Respond ONLY with the translated summary."
+                )
+                status_msg = f"Summarizing in {target_lang.upper()}..."
             else:
+                instruction = (
+                    f"RULE: Translate the following text to language (ISO 639-1): {target_lang}. "
+                    "RULE: Preserve formatting and tone. Respond ONLY with the translation."
+                )
                 status_msg = (
-                    f"Translating from {text_lang.upper()} to {target_lang.upper()}"
+                    f"Refining in {target_lang.upper()}"
+                    if text_lang.lower() == target_lang.lower()
+                    else f"Translating to {target_lang.upper()}"
                 )
 
             await self._status(status_msg)
@@ -214,7 +224,7 @@ class Filter:
             # Log translation completion
             self._dbg(f"Translation completed. Output length: {len(translated_text)}")
 
-            if cmd == "TR":
+            if cmd in ("TR", "TRS"):
                 ctx["msg"] = translated_text
             else:
                 enforced_text = f"{translated_text}\n\nRULE: I want you to respond strictly in language (ISO 639-1): {target_lang}"
@@ -268,7 +278,7 @@ class Filter:
                     assistant_msg["content"] = translated
                     self._dbg("Back-translation successful and injected.")
 
-        elif cmd in ("HELP", "TL", "BL", "TR"):
+        elif cmd in ("HELP", "TL", "BL", "TR", "TRS"):
             self._dbg(
                 f"Injecting captured message from context into assistant response for command: {cmd}"
             )
@@ -306,19 +316,19 @@ class Filter:
         bl = self.ctx.get("bl")
         tl = self.ctx.get("tl")
         return (
-            f"### 🌐 EasyLang Helper\n"
+            f"### 🌐 EasyLang Helper v0.2.0\n"
             f"**Current Status:**\n"
             f"* **BL** (Base): `{bl}`\n"
             f"* **TL** (Target): `{tl}`\n\n"
             f"**Commands:**\n"
-            f"* `tr <text>`: Translate (toggles **BL** ↔ **TL**).\n"
-            f"* `tr`: Translate last assistant message.\n"
-            f"* `trc <text>`: Translate and continue chat.\n"
+            f"* `tr <text>`: Translate or Refine (toggles **BL** ↔ **TL**).\n"
+            f"* `trs <text>`: Translate & Summarize (direct output).\n"
+            f"* `trc <text>`: Translate and continue chat (injects into LLM).\n"
             f"* `tl` / `bl`: Show or configure **TL** / **BL**.\n\n"
             f"**Notes:**\n"
-            f"* Append `:<lang>` to any command (e.g., `tr:fr`, `tl:it`) to update settings on the fly.\n"
-            f"* Languages can be entered in **any format or language** (e.g., `:italian`, `:jp`, `:español`);\n"
-            f"they will be automatically converted to **ISO 639-1** format."
+            f"* `tr` and `trs` without text will process the **last assistant message**.\n"
+            f"* Append `:<lang>` to any command (e.g., `trs:it`, `tl:en`) to override settings.\n"
+            f"* Supports natural language for ISO conversion (e.g., `:giapponese` → `ja`)."
         )
 
     def _save_state(self):
@@ -420,7 +430,7 @@ class Filter:
 
     def _dmp(self, data, title: Optional[str] = "data"):
         if self.valves.debug:
-            header = "—" * 80 + "\n📦 EASYMAGE DUMP\n" + "—" * 80
+            header = "—" * 80 + "\n📦 EasyLang Dump\n" + "—" * 80
             print(header, file=sys.stderr, flush=True)
             print(
                 f"{title}: " + json.dumps(data, indent=4),
@@ -429,7 +439,7 @@ class Filter:
             )
             print("—" * 80, file=sys.stderr, flush=True)
 
-    def _err(self, e: Exception):
+    def _err(self, e: Union[Exception, str]):
         err_msg = str(e)
         print(f"❌ EASYLANG ERROR: {err_msg}", file=sys.stderr, flush=True)
 
