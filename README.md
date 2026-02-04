@@ -1,13 +1,30 @@
+
 # 🌐 EasyLang: Easy Translation Assistant Filter
 
-Open WebUI filter designed to orchestrate seamless multilingual communication. It manages smart translation workflows, automatic language anchoring, and real-time performance analytics.
+State-aware translation assistant for Open WebUI. Features smart bidirectional toggling, context-based summarization, and precision performance tracking.
+
 
 [![GitHub Repo](https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white)](https://github.com/annibale-x/EasyLang)
 ![Open WebUI Plugin](https://img.shields.io/badge/Open%20WebUI-Plugin-blue?style=flat&logo=openai)
 ![License](https://img.shields.io/github/license/annibale-x/EasyLang?color=green)
 
-⚠️ **IMPORTANT: Early Release & Beta Notice**
-This project is only 3 days old. While the core logic is solid, it has not yet been extensively stress-tested for all possible edge cases. The filter is currently undergoing intensive development and testing. Please be patient with any anomalies or unexpected behavior. If you encounter bugs or logic errors, please open an [issue](https://github.com/annibale-x/Easylang/issues) on GitHub.
+---
+
+### 🚀 At a Glance: What can you do?
+
+-   **Zero-Click Translation**: Just type `tr <text>` and let the filter figure out if it needs to translate to your target language or back to your base language.
+    
+-   **Smart "Context Scraper"**: Type `tr` (empty) to instantly translate the last message sent by the Assistant without copying and pasting.
+    
+-   **Contextual Summarization**: Use `trs` to get a bulleted summary of long texts or previous assistant answers in your preferred language.
+    
+-   **Bypass the LLM**: Translate text directly in the chat bar without triggering a full LLM response, saving time and tokens.
+    
+-   **Deep Language Injection**: Use `trc` to translate your thought and feed it directly to the model, allowing you to chat in a language you don't speak fluently.
+    
+-   **Automatic Re-Anchoring**: Switch your speaking language mid-conversation; EasyLang detects the change and updates your "Base Language" pointer automatically.
+    
+-   **Real-Time Telemetry**: Monitor exactly how many tokens you are spending and the latency of every single translation.
 
 ---
 
@@ -19,21 +36,22 @@ Whether you are debugging code in English or chatting in French, the filter adap
 
 ---
 
+
 ### 💡 Usage & Command Schema
 
-Every command containing `<text>` triggers a **Language Detection** routine (unless an ISO override is provided). The system dynamically compares the detected language with the `BL` (Base Language) and `TL` (Target Language) pointers.
+Every command containing `<text>` triggers a **Language Detection** routine. The system dynamically compares the detected language with the `BL` (Base Language) and `TL` (Target Language) pointers.
 
 | Command | Action | Logic / Behavioral Impact |
 | :--- | :--- | :--- |
 | **`tr <text>`** | **Dynamic Toggle** | Detects input: If `TL` → Translates to `BL`. Otherwise → Translates to `TL`. |
 | **`tr`** | **Context Recovery** | Scrapes the last `assistant` message and executes a symmetric translation. |
-| **`tr-<iso> <text>`** | **Forced Target** | Translates `<text>` directly to `<iso>` and updates the `TL` pointer. |
-| **`tr-<iso>`** | **Forced Context** | Scrapes the last `assistant` message, translates to `<iso>`, and updates `TL`. |
-| **`trc <text>`** | **Chat Continuation** | Translates input to `TL` (or `BL` if input is `TL`) and dispatches to the LLM. |
-| **`bl <lang>` / `tl <lang>`** | **Manual Override** | Sets `BL` or `TL` using full names (LLM resolved) or 2-letter ISO codes. |
+| **`trs <text>`** | **Summarize** | **[NEW]** Translates and summarizes text in `TL` using bullet points. |
+| **`trs`** | **Context Summary** | Summarizes the last `assistant` message in the target language. |
+| **`trc <text>`** | **Chat Continuation** | Translates input and injects it into the LLM stream to continue the chat. |
+| **`<cmd>:<lang>`** | **Force Language** | Valid for `tr:`, `trs:`, `trc:`. Overrides `TL` and updates the pointer. |
+| **`bl:<lang>` / `tl:<lang>`** | **Manual Set** | Sets `BL` or `TL` using full names or 2-letter ISO codes. |
 | **`bl` / `tl`** | **Pointer Query** | Returns the current value of the requested language pointer. |
-| **`t?`** | **System Dashboard** | Displays `BL`/`TL` status, session metadata, and command reference. |
-
+| **`t?`** | **System Dashboard** | Displays `BL`/`TL` status, telemetry, and command reference. |
 ---
 
 ## ⚡ Language Updates Logic
@@ -43,16 +61,18 @@ Every translation command triggers a state check. Pointers are dynamic and desig
 ### 🏠 Setting BL (Base Language)
 | Command | Example | Description |
 | :--- | :--- | :--- |
-| **`bl <lang>`** | `bl italian` | **Manual**: Resolves and forces the Base Language pointer. |
-| **`bl <iso>`** | `bl it` | **Instant**: Immediately sets the BL using a 2-letter ISO code. |
+| **`bl:<lang>`** | `bl:italian` | **Manual**: Resolves and forces the Base Language pointer. |
+| **`bl:<iso>`** | `bl:it` | **Instant**: Immediately sets the BL using a 2-letter ISO code. |
 | **Automatic** | *User Input* | **Dynamic**: Automatically updates to the detected language if it differs from the current TL. |
+
 
 ### 🎯 Setting TL (Target Language)
 | Command | Example | Description |
 | :--- | :--- | :--- |
-| **`tl <lang>`** | `tl spanish` | **Manual**: Explicitly sets the default destination language. |
-| **`tr-<iso>`** | `tr-en` | **Forced Context**: Translates the last message and updates the TL pointer. |
-| **`tr-<iso> <text>`** | `tr-fr salut` | **Forced Target**: Translates text and overrides the TL pointer. |
+| **`tl:<lang>`** | `tl:spanish` | **Manual**: Explicitly sets the default destination language. |
+| **`tr:<lang>`** | `tr:en` | **Forced Context**: Translates the last message and updates the TL pointer. |
+| **`trc:<lang> <text>`**| `trc:fr ...` | **Force & Inject**: Sets TL to `fr`, translates, and continues chat. |
+| **`trs:<lang> <text>`**| `trs:de ...` | **Forced Summary**: Summarizes text directly in the specified ISO language. |
 
 > 💡 **TIP: Dynamic Re-Anchoring & Symmetry**
 > EasyLang automatically syncs pointers based on your input to maintain a perfect toggle.
@@ -67,28 +87,18 @@ Every translation command triggers a state check. Pointers are dynamic and desig
 | :--- | :---: | :--- |
 | **Translation Model** | (Current) | Defines the model for internal sub-calls (Detection/Translation). If empty, the filter uses the active session model. |
 | **Back Translation** | `False` | Enables a recursive translation loop. Intercepts the Assistant response and translates it back to the current Base Language (BL). |
-| **Debug** | `True` | **Runtime Logging**. Dumps internal state machines (UID, CID, BL/TL pointers) and execution logs to the Docker/Standard Error console (`⚡ EASYLANG`). |
+| **Debug** | `False` | **Runtime Logging**. Dumps internal state machines (UID, CID, BL/TL pointers) and execution logs to the Docker/Standard Error console (`⚡ EASYLANG`). |
 
 ---
 
-### ✨ Key Features
-
-* **Dynamic Pivot Anchoring**: Implements a real-time state machine for language pointers. The system automatically re-anchors the Base Language (BL) and Target Language (TL) based on input detection, maintaining bidirectional symmetry without manual state management.
-* **CoT Suppression (Anti-Thinking)**: Injects deterministic system-level directives to inhibit Chain-of-Thought (CoT) generation in reasoning models (e.g., DeepSeek-R1, o1). This forces immediate output and minimizes latency during detection and translation sub-tasks.
-* **Surgical Response Sanitization**: Multi-stage Regex pipeline designed to strip XML artifacts (`<text>`) and reasoning blocks (`<think>`). Ensures clean payload delivery by removing non-content metadata generated by chatty or verbose models.
-* **Unified Performance Telemetry**: Real-time instrumentation of the entire pipeline. Aggregates metrics from all internal sub-calls (Detection, Pivoting, Translation) to provide precise latency (seconds), cumulative token consumption, and effective throughput (**Tk/s**).
-* **Recursive Back-Translation**: Optional secondary loop for response verification. Intercepts the assistant's output and executes a recursive translation back to the detected Base Language (BL) before final UI rendering.
-* **Low-Latency ISO Bypass**: Hybrid resolution engine that prioritizes 2-letter ISO codes for instant configuration, falling back to LLM-driven dictionary resolution only for full-string language names.
-
----
 ### 📌 Output & Performance Metrics
 
 Upon completion, every translation displays a real-time telemetry status:
-`Done | 0.64s | 73 tokens | 110.3 Tk/s`
+`IT ➔ EN | 0.64s | 73 tokens`
 
-1. **Time**: Total round-trip latency including internal LLM calls and sanitization.
-2. **Tokens**: **Cumulative** consumption across all internal pipeline stages.
-3. **Speed**: Precise throughput (Tokens / Time).
+1. **Direction**: Shows the flow (e.g., `BASE ➔ TARGET` or `BACK-TRANSLATION`).
+2. **Time**: Total round-trip latency including internal LLM calls.
+3. **Tokens**: **Cumulative** token consumption across all middleware stages (Detection + Translation).
 
 > ⚠️ **WARNING: Performance Optimization**
 > Reasoning models (e.g., DeepSeek-R1, o1, o3) are significantly slower and more token-intensive due to their internal architecture. To minimize latency and costs, it is highly recommended to set the **Translation Model** valve to a high-throughput, lightweight model.
@@ -100,19 +110,17 @@ Upon completion, every translation displays a real-time telemetry status:
 
 ---
 
-### 💡 Workflow Example
+### 💡 Workflow Example (v0.2.0)
 
 | User Input | Assistant Output| TL | BL | Description |
 | :--- | :--- | :---: | :---: | :--- |
-| `tr ciao` | hello | `en` | `it` | **Inception**: `it` detected and anchored as BL. Default TL (`en`) applied. |
-| `tr how are you` | come stai | `en` | `it` | **Symmetric Toggle**: Input matches TL (`en`), translates back to BL (`it`). |
-| `tr-es ciao` | hola | `es` | `it` | **Forced Target**: ISO override updates TL to `es` and translates. |
-| `tr` | ¿cómo estás? | `es` | `it` | **Context Recovery**: Scrapes last Assistant msg ("hola") and translates to opposite. |
-| `tr-fr` | salut | `fr` | `it` | **Forced Context**: Scrapes assistant, translates to `fr`, and updates TL. |
-| `trc comment ça va?` | *[LLM Response in FR]* | `fr` | `it` | **Chat Continuation**: Preserves user text in history, sends translation to LLM. |
-| `tr Guten Tag` | salut | `fr` | `de` | **Dynamic Re-Anchoring**: New language `de` detected. It becomes the new BL. |
-| `tl ja` | 🗹 TL set to: **ja** | `ja` | `de` | **Manual ISO Override**: TL pointer explicitly moved to Japanese. |
-| `t?` | *[Status Dashboard]* | `ja` | `de` | **System Audit**: Displays current state and telemetry summary. |
+| `tr ciao` | hello | `en` | `it` | **Initial Anchor**: `it` detected as BL. Default TL (`en`) applied. |
+| `trc:fr come va?` | *[LLM Response]* | `fr` | `it` | **Force & Inject**: Sets TL to `fr`, translates, and sends to LLM. |
+| `trs ciao...` | *[Summary in FR]* | `fr` | `it` | **Summarization**: Creates a bulleted summary in the current TL. |
+| `tr how are you` | come stai | `fr` | `it` | **Symmetric Toggle**: Input matches TL, translates back to BL. |
+| `tr:es ciao` | hola | `es` | `it` | **Forced Target**: `:` override updates TL to `es` and translates. |
+| `tr Hola!` | ciao | `es` | `es` | **Self-Correction**: Input is `es`, pointers sync and text is refined. |
+| `tr Guten Tag` | hola | `es` | `de` | **Dynamic Re-Anchoring**: New language `de` detected and set as new BL. |
 
 ### ✨ Bonus Feature: Text Refinement
 
@@ -120,8 +128,15 @@ Since EasyLang re-processes the input through a high-fidelity LLM translation la
 
 | User Input (with Typos) | Assistant Output| TL | BL | Description |
 | :--- | :--- | :---: | :---: | :--- |
-| `tl en` | 🗹 TL set to: **en** | `en` | `any` | Manual target setup. |
-| `tr-en Helo wordl,,, may mane is Hannibal!` | **Hello world, my name is Hannibal!** | `en` | `en` | **Self-Correction**: Input detected as `en`. Pointer updates to sync logic while LLM polishes text. |
+| `tl:en` | 🗹 TL set to: **en** | `en` | `any` | Manual target setup. |
+| `tr:en Helo wordl,,, may mane is Hannibal!` | Hello world, my name is Hannibal! | `en` | `en` | **Self-Correction**: Input detected as `en`. Pointer updates to sync logic while LLM polishes text. |
 
 > ℹ️ **NOTE: Real-Time Text Polisher**
 > This effect effectively serves as a text polisher. The LLM corrects spelling and grammar while the filter ensures your language pointers stay synchronized with your actual speech.
+
+---
+
+### ⚠️ Early Release & Beta Notice**
+This project is only 3 days old. While the core logic is solid, it has not yet been extensively stress-tested for all possible edge cases. The filter is currently undergoing intensive development and testing. Please be patient with any anomalies or unexpected behavior. 
+
+If you encounter bugs or logic errors, please open an [issue](https://github.com/annibale-x/Easylang/issues) on GitHub.
