@@ -1,6 +1,4 @@
-
-
-## 🌐 EasyLang: Easy Translation Assistant Filter
+## 🌐 EasyLang v0.2.3: Easy Translation Assistant Filter
 
 State-aware translation assistant for Open WebUI. Features smart bidirectional toggling, context-based summarization, and precision performance tracking.
 
@@ -10,21 +8,22 @@ State-aware translation assistant for Open WebUI. Features smart bidirectional t
 
 ---
 
+### ✨ What's New in v0.2.3
+- **Database State Persistence**: Moved state management from unstable temporary files to the **Open WebUI Database**. Your `BL` (Base Language) and `TL` (Target Language) settings are now strictly tied to the specific `chat_id` and persist across sessions.
+- **Prompt Engineering Overhaul**: Refined system instructions for `TR`, `TRS`, and `TRC` to reduce "hallucinations" or meta-comments from the translation model. 
+- **Bug Fixes**: General stability improvements and logic refinement for state synchronization.
+
+---
+
 ### 🚀 At a Glance: What can you do?
 
--   **Zero-Click Translation**: Just type `tr <text>` and let the filter figure out if it needs to translate to your target language or back to your base language.
-    
--   **Smart "Context Scraper"**: Type `tr` (empty) to instantly translate the last message sent by the Assistant without copying and pasting.
-    
--   **Contextual Summarization**: Use `trs` to get a bulleted summary of long texts or previous assistant answers in your preferred language.
-    
--   **Bypass the LLM**: Translate text directly in the chat bar without triggering a full LLM response, saving time and tokens.
-    
--   **Deep Language Injection**: Use `trc` to translate your thought and feed it directly to the model, allowing you to chat in a language you don't speak fluently.
-    
--   **Automatic Re-Anchoring**: Switch your speaking language mid-conversation; EasyLang detects the change and updates your "Base Language" pointer automatically.
-    
--   **Real-Time Telemetry**: Monitor exactly how many tokens you are spending and the latency of every single translation.
+- **Zero-Click Translation**: Just type `tr <text>` and let the filter figure out if it needs to translate to your target language or back to your base language.
+- **Smart "Context Scraper"**: Type `tr` (empty) to instantly translate the last message sent by the Assistant without copying and pasting.
+- **Contextual Summarization**: Use `trs` to get a bulleted summary of long texts or previous assistant answers in your preferred language.
+- **Bypass the LLM**: Translate text directly in the chat bar without triggering a full LLM response, saving time and tokens.
+- **Deep Language Injection**: Use `trc` to translate your thought and feed it directly to the model, allowing you to chat in a language you don't speak fluently.
+- **Automatic Re-Anchoring**: Switch your speaking language mid-conversation; EasyLang detects the change and updates your "Base Language" pointer automatically.
+- **Real-Time Telemetry**: Monitor exactly how many tokens you are spending and the latency of every single translation.
 
 ---
 
@@ -44,11 +43,11 @@ Every command containing `<text>` triggers a **Language Detection** routine. The
 | :--- | :--- | :--- |
 | **`tr <text>`** | **Dynamic Toggle** | Detects input: If `TL` → Translates to `BL`. Otherwise → Translates to `TL`. |
 | **`tr`** | **Context Recovery** | Scrapes the last `assistant` message and executes a symmetric translation. |
-| **`trs <text>`** | **Structured Summary** | **[NEW]** Generates a dense, hierarchical summary in `TL` preserving technical depth. |
+| **`trs <text>`** | **Structured Summary** | Generates a dense, hierarchical summary in `TL` preserving technical depth. |
 | **`trs`** | **Context Summary** | Extracts and structures the core information from the last assistant message. |
 | **`trc <text>`** | **Chat Continuation** | Translates input and injects it into the LLM stream to continue the chat. |
-| **`<cmd>:<lang>`** | **Force Language** | Valid for `tr:`, `trs:`, `trc:`. Overrides `TL` and updates the pointer. |
-| **`bl:<lang>` / `tl:<lang>`** | **Manual Set** | Sets `BL` or `TL` using full names or 2-letter ISO codes. |
+| **`<cmd>:<lang>`** | **Force Language** | Valid for `tr:`, `trs:`, `trc:`. Overrides `TL` and updates the pointer in DB. |
+| **`bl:<lang>` / `tl:<lang>`** | **Manual Set** | Sets `BL` or `TL` using full names or 2-letter ISO codes (Persisted in DB). |
 | **`bl` / `tl`** | **Pointer Query** | Returns the current value of the requested language pointer. |
 | **`t?`** | **System Dashboard** | Displays `BL`/`TL` status, telemetry, and command reference. |
 
@@ -73,53 +72,31 @@ Every translation command triggers a state check. Pointers are dynamic and desig
 | **`trc:<lang> <text>`**| `trc:fr ...` | **Force & Inject**: Sets TL to `fr`, translates, and continues chat. |
 | **`trs:<lang> <text>`**| `trs:de ...` | **Forced Summary**: Summarizes text directly in the specified ISO language. |
 
-> 💡 **TIP: Dynamic Re-Anchoring & Symmetry**
-> EasyLang automatically syncs pointers based on your input to maintain a perfect toggle.
-> * **The Toggle Rule**: If you speak **BL**, it translates to **TL**. If you speak **TL**, it translates back to **BL**.
-> * **Auto-Update**: If you speak a **NEW** language (neither BL nor TL), that language immediately becomes the new **BL**, and the system translates it to the current **TL**, keeping the session synchronized.
+> 💡 **TIP: Database Sync**
+> Pointers are saved in the chat metadata. If you refresh the page or return to a chat after days, EasyLang will remember exactly which languages you were using.
 
 ---
 
-### 🔧 Configuration Parameters (Valves) v0.2.0
+### 🔧 Configuration Parameters (Valves)
 
 | Valve | Default | Description |
 | :--- | :---: | :--- |
-| **Translation Model** | (Current) | Defines the model for internal sub-calls (Detection/Translation). If empty, the filter uses the active session model. |
-| **Back Translation** | `False` | Enables a recursive translation loop. Intercepts the Assistant response and translates it back to the current Base Language (BL). |
-| **Debug** | `False` | **Runtime Logging**. Dumps internal state machines (UID, CID, BL/TL pointers) and execution logs to the Docker/Standard Error console (`⚡ EASYLANG`). |
+| **Translation Model** | (Current) | Defines the model for internal sub-calls. If empty, uses the active session model. |
+| **Back Translation** | `False` | Enables recursive translation. Intercepts Assistant response and translates it back to `BL`. |
+| **Debug** | `False` | Dumps state machines and execution logs to the console (`⚡ EASYLANG`). |
 
 ---
 
-### 📌 Output & Performance Metrics
-
-Upon completion, every translation displays a real-time telemetry status:
-`IT ➔ EN | 0.64s | 73 tokens`
-
-1. **Direction**: Shows the flow (e.g., `BASE ➔ TARGET` or `BACK-TRANSLATION`).
-2. **Time**: Total round-trip latency including internal LLM calls.
-3. **Tokens**: **Cumulative** token consumption across all middleware stages (Detection + Translation).
-
-> ⚠️ **WARNING: Performance Optimization**
-> Reasoning models (e.g., DeepSeek-R1, o1, o3) are significantly slower and more token-intensive due to their internal architecture. To minimize latency and costs, it is highly recommended to set the **Translation Model** valve to a high-throughput, lightweight model.
->
-> **Recommended for Translation Valve**:
-> * `gpt-4o-mini` (High speed/accuracy balance)
-> * `claude-3-haiku` (Excellent linguistic nuance)
-> * `gemma2:9b` or `llama3.2:3b` (Best for local Ollama deployments)
-
----
-
-### 💡 Workflow Example (v0.2.0)
+### 💡 Workflow Example (v0.2.3)
 
 | User Input | Assistant Output| BL | TL | Description |
 | :--- | :--- | :---: | :---: | :--- |
 | `tr ciao` | hello | `it` | `en` | **Initial Anchor**: `it` detected as BL. Default TL (`en`) applied. |
-| `trc:fr come va?` | *[LLM Response]* | `it` | `fr` | **Force & Inject**: Sets TL to `fr`, translates, and sends to LLM. |
-| `trs ciao...` | *[Summary in FR]* | `it` | `fr` | **Summarization**: Creates a dense hierarchical summary in the current TL. (`fr`). |
+| `trc:fr come va?` | *[LLM Response]* | `it` | `fr` | **Force & Inject**: Updates TL to `fr` in DB and sends translated prompt to LLM. |
+| `trs` | *[Summary in FR]* | `it` | `fr` | **Context Summary**: Summarizes the last assistant response in `fr`. |
 | `tr comment ça va?` | come va? | `it` | `fr` | **Symmetric Toggle**: Input is TL (`fr`), translates back to BL (`it`). |
-| `tr:es ciao` | hola | `it` | `es` | **Forced Target**: `:` override updates TL to `es` and translates. |
-| `tr Hola!` | ciao | `es` | `es` | **Self-Correction**: Input is `es`, pointers sync and text is refined. |
-| `tr Guten Tag` | hola | `de` | `es` | **Dynamic Re-Anchoring**: New language `de` detected (New BL). Translates to current TL (`es`). |
+| `tr Guten Tag` | hola | `de` | `fr` | **Dynamic Re-Anchoring**: New language `de` detected. BL becomes `de`, translates to current TL (`fr`). |
+| `tl:en` | 🗹 Current TL switched...| `de` | `en` | **Manual Sync**: Forcing target to English for the rest of the chat. |
 
 ### ✨ Bonus Feature: Text Refinement
 
@@ -132,10 +109,19 @@ Since EasyLang re-processes the input through a high-fidelity LLM translation la
 
 > ℹ️ **NOTE: Real-Time Text Polisher**
 > This effect effectively serves as a text polisher. The LLM corrects spelling and grammar while the filter ensures your language pointers stay synchronized with your actual speech.
+---
+
+### 📌 Performance Metrics
+Upon completion, every translation displays a real-time telemetry status:
+`IT ➔ EN | 0.64s | 73 tokens`
+
+> ⚠️ **REASONING MODELS NOTICE**
+> Using models like DeepSeek-R1 or o1 as the **Translation Model** valve will significantly increase latency and token costs. Use lightweight models (Gemma 2, Llama 3.2, GPT-4o-mini) for the best experience.
 
 ---
 
 ### ‼️ Early Release & Beta Notice
+
 While the core logic is solid, it has not yet been extensively stress-tested for all possible edge cases. The filter is currently undergoing intensive development and testing. Please be patient with any anomalies or unexpected behavior. 
 
 If you encounter bugs or logic errors, please open an [issue](https://github.com/annibale-x/Easylang/issues) on GitHub.

@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.2.1
+Version: 0.2.3
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -10,6 +10,12 @@ EasyLang is a high-performance translation middleware designed for Open WebUI.
 It acts as an intelligent interceptor that manages multi-language workflows
 between the User and the LLM, enabling seamless translation, context-aware
 anchoring, and real-time performance telemetry.
+
+Changelog:
+    2026-04-01 v0.2.3
+        State store moved from tmpfile to DB
+        Fixed lot of bugs
+
 """
 
 import asyncio
@@ -22,6 +28,8 @@ from pydantic import BaseModel, Field
 from open_webui.main import generate_chat_completion  # type: ignore
 from open_webui.models.users import UserModel  # type: ignore
 from pathlib import Path
+
+version = "0.2.3"
 
 
 class Filter:
@@ -111,7 +119,7 @@ class Filter:
         # Identification debug for inlet entry
         self._dbg(f"--- INLET START | Chat ID: {ctx['cid']} | Command: {cmd} ---")
 
-        await self._update_state()
+        await self._get_state()
 
         # Added state dump after update
         self._dbg(f"Current Memory State -> Base: {ctx['bl']} | Target: {ctx['tl']}")
@@ -127,7 +135,7 @@ class Filter:
                 curr_lang = ctx[lang_key]
                 if new_lang != curr_lang:
                     ctx[lang_key] = new_lang
-                    self._save_state()
+                    await self._set_state()
                     self._dmp(
                         {"bl": ctx["bl"], "tl": ctx["tl"]}, f"Updated {cmd} State"
                     )
@@ -140,106 +148,130 @@ class Filter:
                 )
 
         elif cmd in ("TR", "TRC", "TRS"):
-
             text = ctx["text"]
-            lang = ctx["lang"]
+            lang_param = ctx["lang"]
 
-            if not text and cmd in ("TR", "TRS"):
-                self._dbg(f"Empty {cmd} detected, fetching last assistant message...")
+            # 1. Fetch text if empty (Context Retrieval)
+            if not text and cmd in ("TR", "TRS", "TRC"):
+                self._dbg(f"Fetching last assistant message for {cmd}...")
                 for m in reversed(messages[:-1]):
-                    if m.get("role") == "assistant":
+                    if m.get("role") == "assistant" and m.get("content"):
                         text = m.get("content", "")
                         break
             if not text:
                 self._dbg("Abort: No text found to translate.")
                 return body
 
-            await self._status("Detecting the base language")
+            # 2. Robust Language Detection
+            await self._status("Detecting language...")
+            # Improved prompt to avoid proper noun confusion (e.g. "Apollo" -> EN)
             text_lang = await self._query(
-                f"Detect: {text[:100]}", "Respond immediately. ISO 639-1 code ONLY."
+                f"Detect language of this text (ISO 639-1 code only, ignore names): {text[:100]}",
+                "Respond with the 2-letter ISO code ONLY.",
             )
-            self._dbg(f"Detected input language: {text_lang}")
 
-            # Type declaration to avoid stupid Pyright errors...
-            bl = str(ctx.get("bl"))
-            tl_state = str(ctx.get("tl"))
-            target_lang: str = ""
+            # Strict normalization: lowercase and strip formatting artifacts
+            text_lang = text_lang.lower().strip()[:2]
 
-            if text_lang == tl_state:
-                target_lang = bl
-                self._dbg(
-                    f"Toggle logic: Input matches TL ({text_lang}). New Target -> BL ({bl})"
-                )
+            # 3. State Preparation (Strict Lowercase)
+            bl = str(ctx.get("bl", "en")).lower()
+            tl = str(ctx.get("tl", "en")).lower()
+
+            self._dbg(f"Logic State -> Input: {text_lang} | BL: {bl} | TL: {tl}")
+
+            # 4. Target Selection Logic (Unified)
+            old_bl, old_tl = bl, tl
+
+            if lang_param:
+                # Case A: Explicit override (e.g., :fr)
+                target_lang = await self._to_iso(lang_param)
+                tl = target_lang
             elif text_lang == bl:
-                target_lang = tl_state
-                self._dbg(
-                    f"Toggle logic: Input matches BL ({text_lang}). New Target -> TL ({tl_state})"
-                )
+                # Case B: Toggling Base -> Target
+                target_lang = tl
+            elif text_lang == tl:
+                # Case C: Toggling Target -> Base
+                target_lang = bl
             else:
-                if not ctx.get("text"):
-                    target_lang = bl
-                    self._dbg(
-                        f"Fallback logic: Unexpected language in TR, forcing BL ({bl})"
-                    )
-                else:
-                    ctx["bl"] = text_lang
-                    target_lang = tl_state
-                    self._save_state()
-                    self._dbg(
-                        f"Re-Anchoring: New Base Language set to {text_lang}. Target: {tl_state}"
-                    )
+                # Case D: Re-Anchoring (New input language detected)
+                # Keep the same target, but update what we consider the 'Base'
+                target_lang = tl
+                bl = text_lang
+                self._dbg(f"Re-Anchoring: New BL is {bl}")
 
-            if lang:
-                target_lang = await self._to_iso(lang)
-                ctx["tl"] = target_lang
-                ctx["bl"] = text_lang
-                self._save_state()
-                self._dbg(
-                    f"Manual Override active: Force TL={target_lang}, BL={text_lang}"
-                )
+            # 4.1 Persistence Layer
+            # Only hit the DB if something actually changed
+            if bl != old_bl or tl != old_tl:
+                ctx["bl"], ctx["tl"] = bl, tl
+                await self._set_state()
+                self._dbg(f"💾 State synchronized: BL={bl}, TL={tl}")
 
+            # 5. Safety Override
+            # Strict check: if target is the same as input, force the opposite
+            if target_lang == text_lang:
+                target_lang = tl if text_lang == bl else bl
+                self._dbg(f"Safety Swap triggered: New target is {target_lang}")
+
+            ctx["target_actual"] = target_lang
+            ctx["current_direction"] = f"{text_lang.upper()} ➔ {target_lang.upper()}"
+
+            # 6. Execution & Instruction Setup
             instruction = ""
             status_msg = ""
 
-            if cmd == "TRS":
+            if cmd == "TRC":
                 instruction = (
-                    f"RULE: Provide a detailed and comprehensive summary of the following text in language (ISO 639-1): {target_lang}. "
-                    "RULE: Use structured bullet points to preserve technical depth, logical arguments, and critical details. "
-                    "Respond ONLY with the translated summary."
+                    f"RULE: First, translate the user's request into language (ISO 639-1 code): {target_lang.upper()}.\n"
+                    f"THEN, fulfill that request immediately and extensively in {target_lang.upper()}.\n"
+                    f"DO NOT meta-comment. DO NOT ask questions. Just provide the requested content."
+                )
+                status_msg = f"Moving conversation to {target_lang.upper()}..."
+            elif cmd == "TRS":
+                instruction = (
+                    f"TASK: Summarize the following text.\n"
+                    f"You MUST ignore the original language and respond ONLY in language (ISO 639-1 code): {target_lang.upper()}.\n"
+                    f"FORMAT: Use standard Markdown bullet points.\n"
+                    f"CRITICAL: DO NOT use code blocks, DO NOT use JSON, and DO NOT use technical data formats. "
+                    f"Write in plain, readable prose."
                 )
                 status_msg = f"Summarizing in {target_lang.upper()}..."
-            else:
+            else:  # TR
                 instruction = (
-                    f"RULE: Translate the following text to language (ISO 639-1): {target_lang}. "
-                    "RULE: Preserve formatting and tone. Respond ONLY with the translation."
+                    f"### TASK: TRANSLATE TO {target_lang.upper()} ###\n"
+                    f"ROLE: You are a literal translation engine. NOT an assistant.\n"
+                    f"CRITICAL RULES:\n"
+                    f"1. Translate the input text strictly into language (ISO 639-1 code): {target_lang.upper()}.\n"
+                    f"2. DO NOT ANSWER questions. DO NOT explain concepts. DO NOT engage in conversation.\n"
+                    f"3. Output ONLY the translated text. No preamble, no 'Here is the translation'.\n"
+                    f"4. If the input is a question, your output must be the translated question, NOT the answer.\n"
+                    f"5. Maintain formatting."
                 )
-                status_msg = (
-                    f"Refining in {target_lang.upper()}"
-                    if text_lang.lower() == target_lang.lower()
-                    else f"Translating to {target_lang.upper()}"
-                )
+                status_msg = f"Translating to {target_lang.upper()}"
 
             await self._status(status_msg)
             translated_text = await self._query(text, instruction)
 
-            # Log translation completion
-            self._dbg(f"Translation completed. Output length: {len(translated_text)}")
-
+            # 7. Routing
             if cmd in ("TR", "TRS"):
                 ctx["msg"] = translated_text
-            else:
-                enforced_text = f"{translated_text}\n\nRULE: I want you to respond strictly in language (ISO 639-1): {target_lang}"
-                body["messages"][-1]["content"] = enforced_text
-                self._dbg(f"TRC mode: Injected translation into message body.")
+
+            else:  # TRC logic
+                # Simplified injection: Use the translated prompt as the primary instruction
+                body["messages"][-1]["content"] = (
+                    f"Please perform the following task in {target_lang.upper()}:\n"
+                    f"{translated_text}"
+                )
+                self._dbg(
+                    f"TRC: Injected direct task in {target_lang}. Bypass suppression."
+                )
 
                 if self.valves.back_translation:
-                    self._dbg(
-                        "Back-translation enabled. Proceeding to outlet for response capture."
-                    )
                     await self._status(f"Sending {target_lang.upper()} prompt to model")
 
-                return body
+                await self._status(f"Waiting for model response to complete...")
+                return body  # <--- CRITICAL: Returns immediately to LLM
 
+        # Suppression logic for direct output commands (TR, TRS, HELP, etc.)
         return self._suppress_output(body)
 
     async def outlet(
@@ -252,28 +284,34 @@ class Filter:
         assistant_msg = body["messages"][-1]
         ctx = self.ctx
         cmd = ctx.get("cmd")
-        msg = ctx.get("msg")
-        info = f"{ctx['bl'].upper()} ➔ {ctx['tl'].upper()}"
-
         if not cmd:
             return body
 
-        # Identification debug for outlet entry
-        self._dbg(f"--- OUTLET START | Chat ID: {ctx['cid']} | Command: {cmd} ---")
+        # Get the actual target used (fallback to global tl if missing)
+        target_actual = ctx.get("target_actual", ctx.get("tl", "en")).upper()
+        base_lang = ctx.get("bl", "it").upper()
+
+        # Base info string
+        info = ctx.get("current_direction", f"{base_lang} ➔ {target_actual}")
+
+        self._dbg(f"--- OUTLET START | Command: {cmd} ---")
 
         if self.valves.back_translation and cmd == "TRC":
-            info = f"{ctx['bl'].upper()} ➔ {ctx['tl'].upper()} ➔ {ctx['bl'].upper()}"
+            # Update info to show the full round-trip
+            info = f"{base_lang} ➔ {target_actual} ➔ {base_lang}"
+
             content = assistant_msg.get("content", "")
             if content:
-                base_lang = ctx["bl"]
                 await self._status(
-                    f"Back-translating from {ctx['tl'].upper()} to {base_lang.upper()}"
+                    f"Back-translating from {target_actual} to {base_lang}"
                 )
                 instruction = (
                     f"RULE: Translate the following text to language (ISO 639-1): {base_lang}. "
                     "RULE: Preserve formatting and tone. Respond ONLY with the translation."
                 )
-                self._dbg(f"Starting back-translation to {base_lang}...")
+                self._dbg(
+                    f"Starting back-translation from {target_actual} to {base_lang}..."
+                )
                 translated = await self._query(content, instruction)
                 if translated:
                     assistant_msg["content"] = translated
@@ -317,7 +355,7 @@ class Filter:
         bl = self.ctx.get("bl")
         tl = self.ctx.get("tl")
         return (
-            f"### 🌐 EasyLang Helper v0.2.0\n"
+            f"### 🌐 EasyLang Helper v{version}\n"
             f"**Current Status:**\n"
             f"* **BL** (Base): `{bl}`\n"
             f"* **TL** (Target): `{tl}`\n\n"
@@ -329,44 +367,76 @@ class Filter:
             f"**Notes:**\n"
             f"* `tr` and `trs` without text will process the **last assistant message**.\n"
             f"* Append `:<lang>` to any command (e.g., `trs:it`, `tl:en`) to override settings.\n"
-            f"* Supports natural language for ISO conversion (e.g., `:giapponese` → `ja`)."
+            f"* Supports natural language for ISO conversion (e.g., `japanese` → `ja`)."
         )
 
-    def _save_state(self):
-        ctx = self.ctx
-        filename = Path(f"/tmp/{ctx['cid']}.el")
+    async def _get_state(self):
+        """
+        Loads BL and TL from chat metadata in the DB.
+        """
         try:
-            with open(filename, "w") as f:
-                f.write(f"{ctx['bl']}{ctx['tl']}")
-            self._dbg(f"State saved successfully to {filename}")
+            from open_webui.models.chats import Chats
+
+            ctx = self.ctx
+            self._dbg(f"Attempting to load state for Chat ID: {ctx['cid']}")
+
+            chat_obj = Chats.get_chat_by_id(ctx["cid"])
+            if chat_obj:
+                # Safe JSON navigation to avoid nested structures
+                raw = chat_obj.chat
+                content = raw.get("chat", raw) if isinstance(raw, dict) else raw
+                meta = content.get("meta", {}) if isinstance(content, dict) else {}
+
+                # If they exist in DB, use them. Otherwise keep defaults.
+                if meta.get("bl"):
+                    ctx["bl"] = meta["bl"]
+                    self._dbg(f"BL loaded from DB: {meta['bl']}")
+                if meta.get("tl"):
+                    ctx["tl"] = meta["tl"]
+                    self._dbg(f"TL loaded from DB: {meta['tl']}")
+
+            # Safety defaults if ctx is still empty
+            if not ctx.get("bl"):
+                ctx["bl"] = "it"
+            if not ctx.get("tl"):
+                ctx["tl"] = "en"
+
         except Exception as e:
-            self._dbg(f"Critical I/O Error during save: {e}")
-            self._err(f"EasyLang State Error: Unable to save preferences ({e})")
+            self._dbg(f"Metadata not found or DB error: {e}")
+            self.ctx.update({"bl": "it", "tl": "en"})
 
-    async def _update_state(self):
-        ctx = self.ctx
-        filename = Path(f"/tmp/{ctx['cid']}.el")
+    async def _set_state(self):
+        """
+        Saves BL and TL to the DB (chat column -> meta).
+        """
+        try:
+            from open_webui.models.chats import Chats
 
-        if not filename.exists():
-            await self._status("Initializing EasyLang state...")
-            self._dbg(f"State file {filename} not found. Initializing...")
-            if self.valves.target_language:
-                bl = await self._to_iso(self.valves.target_language)
-            else:
-                bl = "en"
+            ctx = self.ctx
+            self._dbg(f"Attempting to save state for Chat ID: {ctx['cid']}")
 
-            try:
-                with open(filename, "w") as f:
-                    f.write(f"{bl}{bl}")
-            except Exception as e:
-                self._err(e)
+            chat_obj = Chats.get_chat_by_id(ctx["cid"])
+            if not chat_obj:
+                self._dbg(f"Save failed: Chat object not found for ID {ctx['cid']}")
+                return
 
-        content = filename.read_text().strip()
-        if len(content) >= 4:
-            ctx.update({"bl": content[:2], "tl": content[2:]})
-        else:
-            self._dbg("State file corrupted or too short. Falling back to defaults.")
-            ctx.update({"bl": "en", "tl": "en"})
+            raw = chat_obj.chat
+            content = raw.get("chat", raw) if isinstance(raw, dict) else raw
+
+            # Ensure meta structure exists
+            if not isinstance(content, dict):
+                content = {"messages": [], "meta": {}}
+            if "meta" not in content:
+                content["meta"] = {}
+
+            content["meta"]["bl"] = ctx["bl"]
+            content["meta"]["tl"] = ctx["tl"]
+
+            # Physical record update
+            Chats.update_chat_by_id(ctx["cid"], {"chat": content})
+            self._dbg(f"💾 State saved successfully: {ctx['bl']} -> {ctx['tl']}")
+        except Exception as e:
+            self._err(f"Save error: {e}")
 
     async def _to_iso(self, lang) -> str:
         await self._status(f"Identifying target language: {lang}")
@@ -397,6 +467,7 @@ class Filter:
         messages = []
         if instruct:
             messages.append({"role": "system", "content": instruct})
+
         messages.append({"role": "user", "content": prompt})
 
         payload = {
@@ -463,8 +534,9 @@ class Filter:
 
     def _suppress_output(self, body: dict) -> dict:
         self._dbg("Suppressing main model output (Single Dot mode).")
-        body["messages"] = [{"role": "user", "content": "Respond with a single dot"}]
+        body["messages"] = [{"role": "user", "content": "Respond with a single dot."}]
         body["max_tokens"] = 1
+        body["stream"] = False
         if "stop" in body:
             del body["stop"]
         return body
