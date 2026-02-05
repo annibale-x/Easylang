@@ -1,26 +1,11 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
 Version: 0.2.5
-https://github.com/annibale-x/Easylang
+Repository: https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
 Author_email: annibale.x@gmail.com
-Core Purpose:
-EasyLang is a high-performance translation middleware designed for Open WebUI.
-It acts as an intelligent interceptor that manages multi-language workflows
-between the User and the LLM, enabling seamless translation, context-aware
-anchoring, and real-time performance telemetry.
-
-Changelog:
-
-    2026-02-05 v0.2.5
-        Token consumption optimization
-
-    2026-02-04 v0.2.4
-        State store moved from tmpfile to DB
-        Refined prompt for translation
-        Fixed lot of bugs
-
+License: MIT
 """
 
 import asyncio
@@ -32,6 +17,8 @@ from typing import Optional, Union
 from pydantic import BaseModel, Field
 from open_webui.main import generate_chat_completion  # type: ignore
 from open_webui.models.users import UserModel  # type: ignore
+from open_webui.models.chats import Chats  # type: ignore
+
 
 version = "0.2.5"
 
@@ -127,7 +114,7 @@ class Filter:
         # Identification debug for inlet entry
 
         self._dbg(
-            f"\n\n --- INLET START | Chat ID: {ctx['cid']} | Command: {cmd} ---\n"
+            f"\n\n 👉 --- INLET START | Chat ID: {ctx['cid']} | Command: {cmd} ---\n"
         )
         self._dbg(f"{dbg_str}")
 
@@ -249,6 +236,7 @@ class Filter:
 
             if cmd == "TRS":
                 instruction = (
+                    # f'"/no-think"\n'
                     f"TASK: Summarize the following text.\n"
                     f"You MUST ignore the original language and respond ONLY in language (ISO 639-1 code): {target_lang.upper()}.\n"
                     f"FORMAT: Use standard Markdown bullet points.\n"
@@ -335,7 +323,7 @@ class Filter:
         # Base info string
         info = ctx.get("current_direction", f"{base_lang} ➔ {target_actual}")
 
-        self._dbg(f"\n\n --- OUTLET START | Command: {cmd} ---\n")
+        self._dbg(f"\n\n 👉 --- OUTLET START | Command: {cmd} ---\n")
 
         if self.valves.back_translation and cmd == "TRC":
             # Update info to show the full round-trip
@@ -423,7 +411,6 @@ class Filter:
         """
 
         try:
-            from open_webui.models.chats import Chats # type: ignore
 
             ctx = self.ctx
 
@@ -432,6 +419,7 @@ class Filter:
             chat_obj = Chats.get_chat_by_id(ctx["cid"])
 
             if chat_obj:
+                
                 # Safe JSON navigation to avoid nested structures
                 raw = chat_obj.chat
                 content = raw.get("chat", raw) if isinstance(raw, dict) else raw
@@ -467,7 +455,6 @@ class Filter:
         """
 
         try:
-            from open_webui.models.chats import Chats # type: ignore
 
             ctx = self.ctx
 
@@ -647,7 +634,6 @@ class Filter:
             total_tk_display = ctx.get("tk", 0) + raw_total_tk
         else:
             # TR/TRS: Translation (Inlet) + Suppression Overhead (Outlet)
-            # We now include the 10-17 tokens used to keep the 5090 'quiet'
             total_tk_display = ctx.get("tk", 0) + raw_total_tk
 
         # 3. Wall Time and Performance Calculation
@@ -693,6 +679,7 @@ class Filter:
         body["max_tokens"] = 1
         body["stream"] = False
         body["think"] = False
+        body["seed"] = 42
 
         # 3. Cleanup stop sequences if present
         if "stop" in body:
