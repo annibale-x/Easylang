@@ -1,5 +1,5 @@
 **2026-02-05 v0.2.5**
- -Token consumption optimization
+- Token consumption optimization
 
 **2026-02-04 v0.2.4**
 - State store moved from tmpfile to DB
