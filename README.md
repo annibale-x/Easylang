@@ -8,7 +8,8 @@ State-aware translation assistant for Open WebUI. Features smart bidirectional t
 
 ---
 
-### ✨ What's New in v0.2.4
+### ✨ What's New in v0.2.5
+- **Token consumption optimization**: Ephemeral body-wiping mechanism and forced early termination.
 - **Database State Persistence**: Moved state management from unstable temporary files to the **Open WebUI Database**. Your `BL` (Base Language) and `TL` (Target Language) settings are now strictly tied to the specific `chat_id` and persist across sessions.
 - **Prompt Engineering Overhaul**: Refined system instructions for `TR`, `TRS`, and `TRC` to reduce "hallucinations" or meta-comments from the translation model. 
 - **Bug Fixes**: General stability improvements and logic refinement for state synchronization.

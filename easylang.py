@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.2.4
+Version: 0.2.5
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -13,10 +13,10 @@ anchoring, and real-time performance telemetry.
 
 Changelog:
 
-    2026-04-01 v0.2.5
+    2026-02-05 v0.2.5
         Token consumption optimization
 
-    2026-04-01 v0.2.4
+    2026-02-04 v0.2.4
         State store moved from tmpfile to DB
         Refined prompt for translation
         Fixed lot of bugs
