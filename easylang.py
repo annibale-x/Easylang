@@ -12,6 +12,10 @@ between the User and the LLM, enabling seamless translation, context-aware
 anchoring, and real-time performance telemetry.
 
 Changelog:
+
+    2026-04-01 v0.2.5
+        Token consumption optimization
+
     2026-04-01 v0.2.4
         State store moved from tmpfile to DB
         Refined prompt for translation
@@ -257,38 +261,31 @@ class Filter:
                 # Works for both TR and TRC: get a clean translation first
                 instruction = f"Translator Engine: {text_lang.upper()}->{target_lang.upper()}. Output translation ONLY. No talk. No execution."
                 status_msg = f"Translating to {target_lang.upper()}..."
+                from textwrap import dedent
 
-                if "llama" in tm.lower():
-                    # Llama OK
-                    query_payload = (
-                        f"Translate the following text from {text_lang.upper()} to {target_lang.upper()}.\n"
-                        f'Original: "{text}"\n'
-                        f'Translation: "'
-                    )
+                # if "llama" in tm.lower():
+                #     query_payload = (
+                #         f"Translate the following text from {text_lang.upper()} to {target_lang.upper()}.\n"
+                #         f'Original: "{text}"\n'
+                #         f'Translation: "'
+                #     )
 
-                elif "mistral" in tm.lower():
-                    query_payload = (
-                        f"[INST] Refined prompt for translation: {text_lang.upper()} to {target_lang.upper()} [/INST]\n"
-                        f'Source: "{text}"\n'
-                        f"Translation: "
-                    )
-
-                # Gemma, cogito, qwen, deepseek ok
-                else:
-                    query_payload = (
-                        f"<user>\n"
-                        f"Task: Literal translation to {target_lang.upper()}.\n"
-                        f'Input: "{text}"\n'
-                        f'Translate:\n"{text}"\n'
-                        f"<assistant>\n"
-                    )
+                # # Gemma, cogito, qwen, deepseek ok
+                # else:
+                query_payload = (
+                    f"<user>\n"
+                    f"Task: Literal translation to {target_lang.upper()}.\n"
+                    f'Input: "{text}"\n'
+                    f"Translate:\n"
+                    f"<assistant>\n"
+                )
 
             await self._status(status_msg)
             translated_text = await self._query(query_payload, instruction)
 
-            self._dbg(
-                f"\n 👉 INSTRUCTION: {instruction}\n\n 👉 PAYLOAD: {query_payload}\n\n 👉 TRANSLATION: {translated_text}\n\n"
-            )
+            # self._dbg(
+            #     f"\n 👉 INSTRUCTION: {instruction}\n\n 👉 PAYLOAD: {query_payload}\n\n 👉 TRANSLATION: {translated_text}\n\n"
+            # )
 
             # 7. Routing
             if cmd in ("TR", "TRS"):
@@ -305,9 +302,11 @@ class Filter:
                     f"\n\nTRC: Injected direct task. Target: {target_lang}. Prompt: {translated_text}\n"
                 )
 
+                await self._status("Waiting for assistant response..")
+
+                # Suppression logic for direct output commands (TR, TRS, HELP, etc.)
                 return body
 
-        # Suppression logic for direct output commands (TR, TRS, HELP, etc.)
         return self._suppress_output(body)
 
     async def outlet(
@@ -374,17 +373,8 @@ class Filter:
 
             assistant_msg["content"] = ctx.get("msg", "Something went wrong")
 
-        tk = ctx.get("tk")
-        tt = time.perf_counter() - ctx.get("t0", 0.0)
-        t2 = round(tt, 2)
-
-        # Telemetry debug
-
-        self._dbg(
-            f"Execution Telemetry -> Time: {t2}s | Tokens used in middleware: {tk}\n\n"
-        )
-
-        await self._status(f"{info} | {t2}s | {tk} tokens", True)  # type: ignore
+        # Telemetry
+        await self._send_telemetry_status(assistant_msg, info)
 
         return body
 
@@ -531,24 +521,27 @@ class Filter:
         return iso_lang
 
     async def _query(self, prompt: str, instruct: str = "") -> str:
+
         ctx = self.ctx
         req = ctx.get("req")
-
         selected_model = ctx.get("tm")
         user = ctx.get("user")
 
-        messages = []
+        # Create a fresh, isolated message list for the translator
+        # This prevents loading the entire chat history
+        isolated_messages = []
 
         if instruct:
-            messages.append({"role": "system", "content": instruct})
+            isolated_messages.append({"role": "system", "content": instruct})
 
-        messages.append({"role": "user", "content": prompt})
+        isolated_messages.append({"role": "user", "content": prompt})
 
         payload = {
             "model": selected_model,
-            "messages": messages,
+            "messages": isolated_messages,
             "stream": False,
-            "temperature": 0,
+            "seed": 42,
+            "temperature": 0.0,
         }
 
         try:
@@ -595,6 +588,7 @@ class Filter:
             print("—" * 80, file=sys.stderr, flush=True)
 
     def _err(self, e: Union[Exception, str]):
+
         err_msg = str(e)
 
         self._dbg(f"--- ERROR HANDLER TRIGGERED: {err_msg} ---")
@@ -621,14 +615,77 @@ class Filter:
             except Exception:
                 pass
 
+    async def _send_telemetry_status(self, assistant_msg: dict, info: str):
+
+        ctx = self.ctx
+        cmd = ctx.get("cmd")
+        usage = assistant_msg.get("usage", {})
+
+        # --- Telemetry ---
+
+        # 1. GPU Timers (Directly from Ollama)
+        raw_total_tk = usage.get("total_tokens", 0)
+        prompt_gpu_time = usage.get("prompt_eval_duration", 0) / 1_000_000_000
+        response_gpu_time = usage.get("eval_duration", 0) / 1_000_000_000
+        total_gpu_work_time = prompt_gpu_time + response_gpu_time
+        tps = usage.get("response_token/s", 0)
+
+        # 2. Token Accounting Logic (Honest Mode)
+        if cmd == "TRC":
+            # TRC: Translation (Inlet) + Long Generation (Outlet)
+            total_tk_display = ctx.get("tk", 0) + raw_total_tk
+        else:
+            # TR/TRS: Translation (Inlet) + Suppression Overhead (Outlet)
+            # We now include the 10-17 tokens used to keep the 5090 'quiet'
+            total_tk_display = ctx.get("tk", 0) + raw_total_tk
+
+        # 3. Wall Time and Performance Calculation
+        wall_time = round(time.perf_counter() - ctx.get("t0", 0.0), 2)
+
+        # We prioritize GPU time for accuracy if available
+        display_time = (
+            round(total_gpu_work_time, 2) if total_gpu_work_time > 0 else wall_time
+        )
+
+        # --- FINAL STATUS ASSEMBLY ---
+        status_line = (
+            f"{info} | {display_time}s | {total_tk_display} tokens | {tps} tk/s"
+        )
+
+        self._dbg(
+            f"{cmd}: Telemetry Info -> Wall: {wall_time}s | GPU (Total): {total_gpu_work_time:.2f}s "
+            f"(Prompt: {prompt_gpu_time:.2f}s, Eval: {response_gpu_time:.2f}s) | Speed: {tps} tk/s"
+        )
+
+        # await self._status(
+        #     f"Wall: {wall_time}s | GPU: {total_gpu_work_time:.2f}s (Prompt: {prompt_gpu_time:.2f}s + Eval: {response_gpu_time:.2f}s)",
+        #     False,
+        # )
+
+        await self._status(status_line, True)
+
     def _suppress_output(self, body: dict) -> dict:
+        """
+        Wipes the history and suppresses output for synchronous commands.
+        This saves massive GPU cycles on the RTX 5090 by avoiding history pre-fill.
+        """
+        self._dbg("Suppressing output and Wiping ephemeral history.")
 
-        self._dbg("Suppressing main model output (Single Dot mode).")
+        # 1. Clear the message history to save GPU prefill time
+        # We only send a single, minimal instruction
+        body["messages"][:] = [{"role": "user", "content": "Respond a single dot (.)"}]
+        # body["metadata"] = {}
 
-        body["messages"] = [{"role": "user", "content": "Respond with a single dot."}]
+        # 2. Authoritative root overrides
+        body["temperature"] = 0.0
+        body["num_predict"] = 1
         body["max_tokens"] = 1
         body["stream"] = False
+        body["think"] = False
 
+        self._dmp(body, "body")
+
+        # 3. Cleanup stop sequences if present
         if "stop" in body:
             del body["stop"]
 
