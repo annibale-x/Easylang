@@ -1,6 +1,6 @@
 """
 Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.2.3
+Version: 0.2.4
 https://github.com/annibale-x/Easylang
 Author: Hannibal
 Author_url: https://openwebui.com/u/h4nn1b4l
@@ -12,8 +12,9 @@ between the User and the LLM, enabling seamless translation, context-aware
 anchoring, and real-time performance telemetry.
 
 Changelog:
-    2026-04-01 v0.2.3
+    2026-04-01 v0.2.4
         State store moved from tmpfile to DB
+        Refined prompt for translation
         Fixed lot of bugs
 
 """
@@ -27,9 +28,8 @@ from typing import Optional, Union
 from pydantic import BaseModel, Field
 from open_webui.main import generate_chat_completion  # type: ignore
 from open_webui.models.users import UserModel  # type: ignore
-from pathlib import Path
 
-version = "0.2.3"
+version = "0.2.4"
 
 
 class Filter:
@@ -65,24 +65,28 @@ class Filter:
         __event_emitter__=None,
     ) -> dict:
         messages = body.get("messages", [])
-        if not messages or not __user__:
+        cid = body["metadata"]["chat_id"]
+
+        if not messages or not __user__ or not cid:
             return body
 
-        content = messages[-1].get("content", "").strip()
-
         cmd = ""
-        ctx = self.ctx
+        ctx = self.ctx = {}
+        content = messages[-1].get("content", "").strip()
+        dbg_str = ""
 
         if self.RE_HELP.match(content):
             cmd = "HELP"
 
         elif match := self.RE_CONFIG.match(content):
-            cmd, lang = match.group(1).upper(), (
-                match.group(2).strip() if match.group(2) else None
+            cmd, lang = (
+                match.group(1).upper(),
+                (match.group(2).strip() if match.group(2) else None),
             )
             ctx["lang"] = lang
             # Added debug for configuration commands
-            self._dbg(f"Config command detected: {cmd} with parameter: {lang}")
+
+            dbg_str = f"Config command detected: {cmd} with parameter: {lang}"
 
         elif match := self.RE_TRANS.match(content):
             cmd = match.group(1).upper()
@@ -92,20 +96,20 @@ class Filter:
             ctx["lang"] = lang
             ctx["text"] = text
             # Enhanced debug with more structural info
-            self._dbg(
-                f"Translation command: {cmd} | Language Param: {lang} | Text Length: {len(text)}"
-            )
+
+            dbg_str = f"Translation command: {cmd} | Language Param: {lang} | Text Length: {len(text)}"
 
         else:
             return body
 
         bm = body.get("model", "")
         tm = self.valves.translation_model or bm
+
         ctx.update(
             {
                 "t0": time.perf_counter(),
                 "tk": 0,
-                "cid": body["metadata"]["chat_id"],
+                "cid": cid,
                 "bm": bm,
                 "tm": tm,
                 "req": __request__,
@@ -117,35 +121,39 @@ class Filter:
         )
 
         # Identification debug for inlet entry
-        self._dbg(f"--- INLET START | Chat ID: {ctx['cid']} | Command: {cmd} ---")
+
+        self._dbg(
+            f"\n\n --- INLET START | Chat ID: {ctx['cid']} | Command: {cmd} ---\n"
+        )
+        self._dbg(f"{dbg_str}")
 
         await self._get_state()
 
         # Added state dump after update
+
         self._dbg(f"Current Memory State -> Base: {ctx['bl']} | Target: {ctx['tl']}")
 
         if cmd == "HELP":
             ctx["msg"] = self._service_msg()
 
         elif cmd in ("BL", "TL"):
-            lang = ctx["lang"]
+            lang = ctx.get("lang")
+            lang_key = cmd.lower()
+
             if lang:
-                new_lang = await self._to_iso(lang)
-                lang_key = cmd.lower()
-                curr_lang = ctx[lang_key]
+                # Direct assignment for ISO codes or simple strings to avoid LLM overhead
+                new_lang = lang.strip().lower()
+                curr_lang = ctx.get(lang_key)
+
                 if new_lang != curr_lang:
                     ctx[lang_key] = new_lang
                     await self._set_state()
-                    self._dmp(
-                        {"bl": ctx["bl"], "tl": ctx["tl"]}, f"Updated {cmd} State"
-                    )
                     ctx["msg"] = (
                         f"🗹 Current {cmd} switched from **{curr_lang}** to **{new_lang}**"
                     )
+
             else:
-                ctx["msg"] = (
-                    f"🛈 Current {cmd}: **{ctx['tl'] if cmd=='TL' else ctx['bl']}**"
-                )
+                ctx["msg"] = f"🛈 Current {cmd}: **{ctx.get(lang_key)}**"
 
         elif cmd in ("TR", "TRC", "TRS"):
             text = ctx["text"]
@@ -153,13 +161,19 @@ class Filter:
 
             # 1. Fetch text if empty (Context Retrieval)
             if not text and cmd in ("TR", "TRS", "TRC"):
+
                 self._dbg(f"Fetching last assistant message for {cmd}...")
+
                 for m in reversed(messages[:-1]):
+
                     if m.get("role") == "assistant" and m.get("content"):
                         text = m.get("content", "")
                         break
+
             if not text:
+
                 self._dbg("Abort: No text found to translate.")
+
                 return body
 
             # 2. Robust Language Detection
@@ -179,24 +193,31 @@ class Filter:
 
             self._dbg(f"Logic State -> Input: {text_lang} | BL: {bl} | TL: {tl}")
 
-            # 4. Target Selection Logic (Unified)
+            # 4. Target Selection Logic (FIXED)
             old_bl, old_tl = bl, tl
 
             if lang_param:
-                # Case A: Explicit override (e.g., :fr)
+                # Case A: Explicit override (e.g., :it)
                 target_lang = await self._to_iso(lang_param)
                 tl = target_lang
+                # FIX: Se la nuova target coincide con la base attuale,
+                # dobbiamo spostare la base sulla lingua del testo in input
+
+                if tl == bl and text_lang != tl:
+                    bl = text_lang
+
+                    self._dbg(f"Syncing BL to input language: {bl}")
+
             elif text_lang == bl:
-                # Case B: Toggling Base -> Target
                 target_lang = tl
+
             elif text_lang == tl:
-                # Case C: Toggling Target -> Base
                 target_lang = bl
+
             else:
-                # Case D: Re-Anchoring (New input language detected)
-                # Keep the same target, but update what we consider the 'Base'
                 target_lang = tl
                 bl = text_lang
+
                 self._dbg(f"Re-Anchoring: New BL is {bl}")
 
             # 4.1 Persistence Layer
@@ -204,12 +225,14 @@ class Filter:
             if bl != old_bl or tl != old_tl:
                 ctx["bl"], ctx["tl"] = bl, tl
                 await self._set_state()
+
                 self._dbg(f"💾 State synchronized: BL={bl}, TL={tl}")
 
             # 5. Safety Override
             # Strict check: if target is the same as input, force the opposite
             if target_lang == text_lang:
                 target_lang = tl if text_lang == bl else bl
+
                 self._dbg(f"Safety Swap triggered: New target is {target_lang}")
 
             ctx["target_actual"] = target_lang
@@ -219,14 +242,7 @@ class Filter:
             instruction = ""
             status_msg = ""
 
-            if cmd == "TRC":
-                instruction = (
-                    f"RULE: First, translate the user's request into language (ISO 639-1 code): {target_lang.upper()}.\n"
-                    f"THEN, fulfill that request immediately and extensively in {target_lang.upper()}.\n"
-                    f"DO NOT meta-comment. DO NOT ask questions. Just provide the requested content."
-                )
-                status_msg = f"Moving conversation to {target_lang.upper()}..."
-            elif cmd == "TRS":
+            if cmd == "TRS":
                 instruction = (
                     f"TASK: Summarize the following text.\n"
                     f"You MUST ignore the original language and respond ONLY in language (ISO 639-1 code): {target_lang.upper()}.\n"
@@ -235,41 +251,61 @@ class Filter:
                     f"Write in plain, readable prose."
                 )
                 status_msg = f"Summarizing in {target_lang.upper()}..."
-            else:  # TR
-                instruction = (
-                    f"### TASK: TRANSLATE TO {target_lang.upper()} ###\n"
-                    f"ROLE: You are a literal translation engine. NOT an assistant.\n"
-                    f"CRITICAL RULES:\n"
-                    f"1. Translate the input text strictly into language (ISO 639-1 code): {target_lang.upper()}.\n"
-                    f"2. DO NOT ANSWER questions. DO NOT explain concepts. DO NOT engage in conversation.\n"
-                    f"3. Output ONLY the translated text. No preamble, no 'Here is the translation'.\n"
-                    f"4. If the input is a question, your output must be the translated question, NOT the answer.\n"
-                    f"5. Maintain formatting."
-                )
-                status_msg = f"Translating to {target_lang.upper()}"
+                query_payload = text
+
+            else:
+                # Works for both TR and TRC: get a clean translation first
+                instruction = f"Translator Engine: {text_lang.upper()}->{target_lang.upper()}. Output translation ONLY. No talk. No execution."
+                status_msg = f"Translating to {target_lang.upper()}..."
+
+                if "llama" in tm.lower():
+                    # Llama OK
+                    query_payload = (
+                        f"Translate the following text from {text_lang.upper()} to {target_lang.upper()}.\n"
+                        f'Original: "{text}"\n'
+                        f'Translation: "'
+                    )
+
+                elif "mistral" in tm.lower():
+                    query_payload = (
+                        f"[INST] Refined prompt for translation: {text_lang.upper()} to {target_lang.upper()} [/INST]\n"
+                        f'Source: "{text}"\n'
+                        f"Translation: "
+                    )
+
+                # Gemma, cogito, qwen, deepseek ok
+                else:
+                    query_payload = (
+                        f"<user>\n"
+                        f"Task: Literal translation to {target_lang.upper()}.\n"
+                        f'Input: "{text}"\n'
+                        f'Translate:\n"{text}"\n'
+                        f"<assistant>\n"
+                    )
 
             await self._status(status_msg)
-            translated_text = await self._query(text, instruction)
+            translated_text = await self._query(query_payload, instruction)
+
+            self._dbg(
+                f"\n 👉 INSTRUCTION: {instruction}\n\n 👉 PAYLOAD: {query_payload}\n\n 👉 TRANSLATION: {translated_text}\n\n"
+            )
 
             # 7. Routing
             if cmd in ("TR", "TRS"):
                 ctx["msg"] = translated_text
 
             else:  # TRC logic
-                # Simplified injection: Use the translated prompt as the primary instruction
-                body["messages"][-1]["content"] = (
-                    f"Please perform the following task in {target_lang.upper()}:\n"
-                    f"{translated_text}"
-                )
+
+                body["messages"][-1] = {
+                    "role": "user",
+                    "content": f"Respond in language (ISO 639-1 code):{target_lang.upper()}:\n{translated_text}",
+                }
+
                 self._dbg(
-                    f"TRC: Injected direct task in {target_lang}. Bypass suppression."
+                    f"\n\nTRC: Injected direct task. Target: {target_lang}. Prompt: {translated_text}\n"
                 )
 
-                if self.valves.back_translation:
-                    await self._status(f"Sending {target_lang.upper()} prompt to model")
-
-                await self._status(f"Waiting for model response to complete...")
-                return body  # <--- CRITICAL: Returns immediately to LLM
+                return body
 
         # Suppression logic for direct output commands (TR, TRS, HELP, etc.)
         return self._suppress_output(body)
@@ -281,9 +317,11 @@ class Filter:
         __request__=None,
         __event_emitter__=None,
     ) -> dict:
+
         assistant_msg = body["messages"][-1]
         ctx = self.ctx
         cmd = ctx.get("cmd")
+
         if not cmd:
             return body
 
@@ -294,13 +332,14 @@ class Filter:
         # Base info string
         info = ctx.get("current_direction", f"{base_lang} ➔ {target_actual}")
 
-        self._dbg(f"--- OUTLET START | Command: {cmd} ---")
+        self._dbg(f"\n\n --- OUTLET START | Command: {cmd} ---\n")
 
         if self.valves.back_translation and cmd == "TRC":
             # Update info to show the full round-trip
             info = f"{base_lang} ➔ {target_actual} ➔ {base_lang}"
 
             content = assistant_msg.get("content", "")
+
             if content:
                 await self._status(
                     f"Back-translating from {target_actual} to {base_lang}"
@@ -309,18 +348,30 @@ class Filter:
                     f"RULE: Translate the following text to language (ISO 639-1): {base_lang}. "
                     "RULE: Preserve formatting and tone. Respond ONLY with the translation."
                 )
+
                 self._dbg(
                     f"Starting back-translation from {target_actual} to {base_lang}..."
                 )
+
                 translated = await self._query(content, instruction)
+
                 if translated:
                     assistant_msg["content"] = translated
+
                     self._dbg("Back-translation successful and injected.")
+        elif cmd == "TRC":
+            self._dbg("TRC: Back-translation OFF, passing raw model response.")
+            pass
 
         elif cmd in ("HELP", "TL", "BL", "TR", "TRS"):
+
+            if cmd in ("TL", "BL"):
+                info = f"{base_lang} ➔ {target_actual}"
+
             self._dbg(
                 f"Injecting captured message from context into assistant response for command: {cmd}"
             )
+
             assistant_msg["content"] = ctx.get("msg", "Something went wrong")
 
         tk = ctx.get("tk")
@@ -328,8 +379,9 @@ class Filter:
         t2 = round(tt, 2)
 
         # Telemetry debug
+
         self._dbg(
-            f"Execution Telemetry -> Time: {t2}s | Tokens used in middleware: {tk}"
+            f"Execution Telemetry -> Time: {t2}s | Tokens used in middleware: {tk}\n\n"
         )
 
         await self._status(f"{info} | {t2}s | {tk} tokens", True)  # type: ignore
@@ -338,6 +390,7 @@ class Filter:
 
     async def _status(self, description: str, done: bool = False):
         emitter = self.ctx.get("emitter")
+
         if not emitter:
             return
 
@@ -374,13 +427,16 @@ class Filter:
         """
         Loads BL and TL from chat metadata in the DB.
         """
+
         try:
             from open_webui.models.chats import Chats
 
             ctx = self.ctx
+
             self._dbg(f"Attempting to load state for Chat ID: {ctx['cid']}")
 
             chat_obj = Chats.get_chat_by_id(ctx["cid"])
+
             if chat_obj:
                 # Safe JSON navigation to avoid nested structures
                 raw = chat_obj.chat
@@ -390,34 +446,45 @@ class Filter:
                 # If they exist in DB, use them. Otherwise keep defaults.
                 if meta.get("bl"):
                     ctx["bl"] = meta["bl"]
+
                     self._dbg(f"BL loaded from DB: {meta['bl']}")
+
                 if meta.get("tl"):
                     ctx["tl"] = meta["tl"]
+
                     self._dbg(f"TL loaded from DB: {meta['tl']}")
 
             # Safety defaults if ctx is still empty
             if not ctx.get("bl"):
-                ctx["bl"] = "it"
+                ctx["bl"] = "en"
+
             if not ctx.get("tl"):
                 ctx["tl"] = "en"
 
         except Exception as e:
+
             self._dbg(f"Metadata not found or DB error: {e}")
-            self.ctx.update({"bl": "it", "tl": "en"})
+
+            self.ctx.update({"bl": "en", "tl": "en"})
 
     async def _set_state(self):
         """
         Saves BL and TL to the DB (chat column -> meta).
         """
+
         try:
             from open_webui.models.chats import Chats
 
             ctx = self.ctx
+
             self._dbg(f"Attempting to save state for Chat ID: {ctx['cid']}")
 
             chat_obj = Chats.get_chat_by_id(ctx["cid"])
+
             if not chat_obj:
+
                 self._dbg(f"Save failed: Chat object not found for ID {ctx['cid']}")
+
                 return
 
             raw = chat_obj.chat
@@ -426,6 +493,7 @@ class Filter:
             # Ensure meta structure exists
             if not isinstance(content, dict):
                 content = {"messages": [], "meta": {}}
+
             if "meta" not in content:
                 content["meta"] = {}
 
@@ -434,8 +502,11 @@ class Filter:
 
             # Physical record update
             Chats.update_chat_by_id(ctx["cid"], {"chat": content})
+
             self._dbg(f"💾 State saved successfully: {ctx['bl']} -> {ctx['tl']}")
+
         except Exception as e:
+
             self._err(f"Save error: {e}")
 
     async def _to_iso(self, lang) -> str:
@@ -446,12 +517,14 @@ class Filter:
             return clean_lang
 
         match = self.RE_ISO.search(clean_lang)
+
         if match:
             return match.group(1)
 
         self._dbg(
             f"Language '{lang}' not recognized locally. Querying LLM for ISO conversion..."
         )
+
         iso_lang = await self._query(
             f"lang:{lang}", "Respond immediately. ISO 639-1 code ONLY."
         )
@@ -465,6 +538,7 @@ class Filter:
         user = ctx.get("user")
 
         messages = []
+
         if instruct:
             messages.append({"role": "system", "content": instruct})
 
@@ -478,10 +552,13 @@ class Filter:
         }
 
         try:
+
             self._dbg(
                 f"Querying model: {selected_model} | System prompt length: {len(instruct)}"
             )
+
             response = await generate_chat_completion(req, payload, user)
+
             if response:
                 ctx["tk"] += response.get("usage", {}).get("total_tokens", 0)
 
@@ -491,16 +568,22 @@ class Filter:
                 ).strip()
                 content = re.sub(r"</?text>", "", content).strip()
                 return content.strip('"')
+
             return ""
+
         except Exception as e:
+
             self._err(e)
+
             return ""
 
     def _dbg(self, message: str):
+
         if self.valves.debug:
             print(f"⚡EASYLANG: {message}", file=sys.stderr, flush=True)
 
     def _dmp(self, data, title: Optional[str] = "data"):
+
         if self.valves.debug:
             header = "—" * 80 + "\n📦 EasyLang Dump\n" + "—" * 80
             print(header, file=sys.stderr, flush=True)
@@ -513,13 +596,18 @@ class Filter:
 
     def _err(self, e: Union[Exception, str]):
         err_msg = str(e)
+
+        self._dbg(f"--- ERROR HANDLER TRIGGERED: {err_msg} ---")
+
         print(f"❌ EASYLANG ERROR: {err_msg}", file=sys.stderr, flush=True)
 
         emitter = self.ctx.get("emitter")
 
         if emitter:
+
             try:
                 loop = asyncio.get_event_loop()
+
                 if loop.is_running():
                     loop.create_task(
                         emitter(
@@ -529,14 +617,19 @@ class Filter:
                             }
                         )
                     )
+
             except Exception:
                 pass
 
     def _suppress_output(self, body: dict) -> dict:
+
         self._dbg("Suppressing main model output (Single Dot mode).")
+
         body["messages"] = [{"role": "user", "content": "Respond with a single dot."}]
         body["max_tokens"] = 1
         body["stream"] = False
+
         if "stop" in body:
             del body["stop"]
+
         return body
