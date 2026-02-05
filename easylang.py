@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from open_webui.main import generate_chat_completion  # type: ignore
 from open_webui.models.users import UserModel  # type: ignore
 
-version = "0.2.4"
+version = "0.2.5"
 
 
 class Filter:
@@ -198,29 +198,30 @@ class Filter:
             self._dbg(f"Logic State -> Input: {text_lang} | BL: {bl} | TL: {tl}")
 
             # 4. Target Selection Logic (FIXED)
+            # 4. Target Selection Logic (RE-FIXED)
             old_bl, old_tl = bl, tl
 
             if lang_param:
-                # Case A: Explicit override (e.g., :it)
+                # Case A: Explicit override (e.g., :fr)
                 target_lang = await self._to_iso(lang_param)
                 tl = target_lang
-                # FIX: Se la nuova target coincide con la base attuale,
-                # dobbiamo spostare la base sulla lingua del testo in input
-
-                if tl == bl and text_lang != tl:
+                # Se la lingua del testo è diversa dalla nuova target,
+                # quella DEVE diventare la nostra nuova Base
+                if text_lang != tl:
                     bl = text_lang
-
-                    self._dbg(f"Syncing BL to input language: {bl}")
 
             elif text_lang == bl:
                 target_lang = tl
 
             elif text_lang == tl:
+                # Se scrivo nella lingua di destinazione, inverti
                 target_lang = bl
 
             else:
-                target_lang = tl
-                bl = text_lang
+                # Caso "Terza Lingua": il testo non è né BL né TL
+                # Esempio: BL=en, TL=it, ma scrivo in FR.
+                target_lang = tl  # Mantengo la destinazione preferita
+                bl = text_lang  # Ma cambio la base per i prossimi
 
                 self._dbg(f"Re-Anchoring: New BL is {bl}")
 
@@ -263,22 +264,25 @@ class Filter:
                 status_msg = f"Translating to {target_lang.upper()}..."
                 from textwrap import dedent
 
-                # if "llama" in tm.lower():
-                #     query_payload = (
-                #         f"Translate the following text from {text_lang.upper()} to {target_lang.upper()}.\n"
-                #         f'Original: "{text}"\n'
-                #         f'Translation: "'
-                #     )
+                if "llama" in tm.lower():
+                    query_payload = (
+                        f"Translate the following text from {text_lang.upper()} to {target_lang.upper()}.\n"
+                        f'Original: "{text}"\n'
+                        f'Translation: "'
+                    )
 
-                # # Gemma, cogito, qwen, deepseek ok
-                # else:
-                query_payload = (
-                    f"<user>\n"
-                    f"Task: Literal translation to {target_lang.upper()}.\n"
-                    f'Input: "{text}"\n'
-                    f"Translate:\n"
-                    f"<assistant>\n"
-                )
+                # Gemma, cogito, qwen, deepseek ok
+                else:
+                    query_payload = (
+                        f"<user>\n"
+                        f"Example 1: Hello → Ciao\n"
+                        f"Example 2: Good morning → Bonjour\n"
+                        f"Example 3: Thank you → Danke\n"
+                        f"Task: Literal translation from {text_lang.upper()} to {target_lang.upper()}.\n"
+                        f'Input: "{text}"\n'
+                        f"Translate:\n"
+                        f"<model>\n"
+                    )
 
             await self._status(status_msg)
             translated_text = await self._query(query_payload, instruction)
@@ -398,7 +402,7 @@ class Filter:
         bl = self.ctx.get("bl")
         tl = self.ctx.get("tl")
         return (
-            f"### 🌐 EasyLang Helper v{version}\n"
+            f"### 🌐 EasyLang v{version}\n"
             f"**Current Status:**\n"
             f"* **BL** (Base): `{bl}`\n"
             f"* **TL** (Target): `{tl}`\n\n"
@@ -419,7 +423,7 @@ class Filter:
         """
 
         try:
-            from open_webui.models.chats import Chats
+            from open_webui.models.chats import Chats # type: ignore
 
             ctx = self.ctx
 
@@ -463,7 +467,7 @@ class Filter:
         """
 
         try:
-            from open_webui.models.chats import Chats
+            from open_webui.models.chats import Chats # type: ignore
 
             ctx = self.ctx
 
@@ -630,6 +634,13 @@ class Filter:
         total_gpu_work_time = prompt_gpu_time + response_gpu_time
         tps = usage.get("response_token/s", 0)
 
+        # Logging raw token data to verify if history wiping actually reduces input tokens
+        raw_prompt_tk = usage.get("prompt_tokens", 0)
+        raw_completion_tk = usage.get("completion_tokens", 0)
+        self._dbg(
+            f"⌛ BE [ Prompt: {raw_prompt_tk} tokens | Gen: {raw_completion_tk} tokens | Total: {raw_total_tk} tokens ]"
+        )
+
         # 2. Token Accounting Logic (Honest Mode)
         if cmd == "TRC":
             # TRC: Translation (Inlet) + Long Generation (Outlet)
@@ -653,9 +664,9 @@ class Filter:
         )
 
         self._dbg(
-            f"{cmd}: Telemetry Info -> Wall: {wall_time}s | GPU (Total): {total_gpu_work_time:.2f}s "
-            f"(Prompt: {prompt_gpu_time:.2f}s, Eval: {response_gpu_time:.2f}s) | Speed: {tps} tk/s"
+            f"⌛ {cmd} [ Wall: {wall_time}s | GPU (Total): {total_gpu_work_time:.2f}s ]"
         )
+        self._dbg(f"⌛ {cmd} [ {status_line} ]")
 
         # await self._status(
         #     f"Wall: {wall_time}s | GPU: {total_gpu_work_time:.2f}s (Prompt: {prompt_gpu_time:.2f}s + Eval: {response_gpu_time:.2f}s)",
@@ -682,8 +693,6 @@ class Filter:
         body["max_tokens"] = 1
         body["stream"] = False
         body["think"] = False
-
-        self._dmp(body, "body")
 
         # 3. Cleanup stop sequences if present
         if "stop" in body:
