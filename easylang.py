@@ -1,11 +1,12 @@
 """
-Title: 🚀 EasyLang: Open WebUI Translation Assistant
-Version: 0.2.5
-Repository: https://github.com/annibale-x/Easylang
-Author: Hannibal
-Author_url: https://openwebui.com/u/h4nn1b4l
-Author_email: annibale.x@gmail.com
-License: MIT
+title: 🚀 EasyLang: Open WebUI Translation Assistant
+version: 0.2.5
+repo_url: https://github.com/annibale-x/Easylang
+author: Hannibal
+author_url: https://openwebui.com/u/h4nn1b4l
+author_email: annibale.x@gmail.com
+license: MIT
+description: Translation assistant for Open WebUI. Features smart bidirectional toggling, context-based summarization, and precision performance tracking.
 """
 
 import asyncio
@@ -419,7 +420,7 @@ class Filter:
             chat_obj = Chats.get_chat_by_id(ctx["cid"])
 
             if chat_obj:
-                
+
                 # Safe JSON navigation to avoid nested structures
                 raw = chat_obj.chat
                 content = raw.get("chat", raw) if isinstance(raw, dict) else raw
