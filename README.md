@@ -1,4 +1,4 @@
-## 🌐 EasyLang v0.2.4: Easy Translation Assistant Filter
+## 🌐 EasyLang v0.2.6: Easy Translation Assistant Filter
 
 State-aware translation assistant for Open WebUI. Features smart bidirectional toggling, context-based summarization, and precision performance tracking.
 
@@ -8,7 +8,8 @@ State-aware translation assistant for Open WebUI. Features smart bidirectional t
 
 ---
 
-### ✨ What's New in v0.2.5
+### ✨ What's New in v0.2.6
+- **Fix multimodal message processing**
 - **Token consumption optimization**: Ephemeral body-wiping mechanism and forced early termination.
 - **Database State Persistence**: Moved state management from unstable temporary files to the **Open WebUI Database**. Your `BL` (Base Language) and `TL` (Target Language) settings are now strictly tied to the specific `chat_id` and persist across sessions.
 - **Prompt Engineering Overhaul**: Refined system instructions for `TR`, `TRS`, and `TRC` to reduce "hallucinations" or meta-comments from the translation model. 
