@@ -1,3 +1,6 @@
+**2026-02-21 v0.2.6**
+- Fix Multimodal Message Processing
+
 **2026-02-05 v0.2.5**
 - Token consumption optimization
 

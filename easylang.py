@@ -1,6 +1,6 @@
 """
 title: 🚀 EasyLang: Open WebUI Translation Assistant
-version: 0.2.5
+version: 0.2.6
 repo_url: https://github.com/annibale-x/Easylang
 author: Hannibal
 author_url: https://openwebui.com/u/h4nn1b4l
@@ -21,7 +21,7 @@ from open_webui.models.users import UserModel  # type: ignore
 from open_webui.models.chats import Chats  # type: ignore
 
 
-version = "0.2.5"
+version = "0.2.6"
 
 
 class Filter:
@@ -56,15 +56,28 @@ class Filter:
         __request__=None,
         __event_emitter__=None,
     ) -> dict:
+
+
         messages = body.get("messages", [])
         cid = body["metadata"]["chat_id"]
 
         if not messages or not __user__ or not cid:
             return body
 
+        # FIX: Multimodal Text Extraction (v0.2.6)
+        # Iterates through all parts of the message to find text, avoiding list-attribute errors
+        last_msg = messages[-1].get("content", "")
+
+        # FIX: Generator expression (Memory Efficient) - No intermediate list creation
+        if isinstance(last_msg, list):
+            content = "\n".join(c["text"] for c in last_msg if c.get("type") == "text")
+        else:
+            content = str(last_msg)
+
+        content = content.strip()
+
         cmd = ""
         ctx = self.ctx = {}
-        content = messages[-1].get("content", "").strip()
         dbg_str = ""
 
         if self.RE_HELP.match(content):
