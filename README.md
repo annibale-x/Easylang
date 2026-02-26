@@ -4,7 +4,7 @@ State-aware translation assistant for Open WebUI. Features smart bidirectional t
 
 [![GitHub Repo](https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white)](https://github.com/annibale-x/open-webui-easylang)
 ![Open WebUI Plugin](https://img.shields.io/badge/Open%20WebUI-Plugin-blue?style=flat&logo=openai)
-![License](https://img.shields.io/github.com/annibale-x/open-webui-easylang?color=green)
+![License](https://img.shields.io/github/license/annibale-x/open-webui-easylang?color=green)
 
 ---
 
