@@ -2,9 +2,9 @@
 
 State-aware translation assistant for Open WebUI. Features smart bidirectional toggling, context-based summarization, and precision performance tracking.
 
-[![GitHub Repo](https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white)](https://github.com/annibale-x/EasyLang)
+[![GitHub Repo](https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white)](https://github.com/annibale-x/open-webui-easylang)
 ![Open WebUI Plugin](https://img.shields.io/badge/Open%20WebUI-Plugin-blue?style=flat&logo=openai)
-![License](https://img.shields.io/github/license/annibale-x/EasyLang?color=green)
+![License](https://img.shields.io/github.com/annibale-x/open-webui-easylang?color=green)
 
 ---
 
@@ -124,4 +124,4 @@ Upon completion, every translation displays a real-time telemetry status:
 
 While the core logic is solid, it has not yet been extensively stress-tested for all possible edge cases. The filter is currently undergoing intensive development and testing. Please be patient with any anomalies or unexpected behavior. 
 
-If you encounter bugs or logic errors, please open an [issue](https://github.com/annibale-x/Easylang/issues) on GitHub.
+If you encounter bugs or logic errors, please open an [issue](https://github.com/annibale-x/open-webui-easylang/issues) on GitHub.
